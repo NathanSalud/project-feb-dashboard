@@ -14,7 +14,7 @@ export interface User {
 const USERS: { username: string; passwordHash: string; user: User }[] = [
   {
     username: 'gdec_admin',
-    passwordHash: bcrypt.hashSync('gdec2024!', 10),
+    passwordHash: '$2b$10$tEpNTrG13Ml0KOzJSZeQPOCwiZWy6xTyvQxOAF0fpsqt9n4gKvbZ2',
     user: {
       username: 'gdec_admin',
       companyName: 'GDEC Admin',
