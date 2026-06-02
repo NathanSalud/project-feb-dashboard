@@ -31,4 +31,8 @@ export class DashboardController {
   getAccounts() {
     return this.dashboardService.getAccounts();
   }
+  @Get('status')
+  getStatus() {
+    return this.dashboardService.getStatus();
+  }
 }

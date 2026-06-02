@@ -245,10 +245,10 @@ const USERS: { username: string; passwordHash: string; user: User }[] = [
     },
   },
   {
-    username: 'nestlé_philippines_inc',
+    username: 'nestle_philippines_inc',
     passwordHash: HASH,
     user: {
-      username: 'nestlé_philippines_inc',
+      username: 'nestle_philippines_inc',
       companyName: 'Nestlé Philippines, Inc.',
       accountNames: ['Nestlé Health Science', 'Nestlé Official Store', 'Nestlé Official Store (Mindanao)', 'Nestlé Official Store (Visayas)', 'Nestlé Purina'],
       platforms: ['Lazada', 'Shopee', 'Tiktok'],

@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { DashboardController } from './dashboard.controller';
-import { SnowflakeModule } from '../snowflake/snowflake.module';
+import { CacheModule } from '../cache/cache.module';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports:     [SnowflakeModule, AuthModule],
+  imports:     [CacheModule, AuthModule],
   providers:   [DashboardService],
   controllers: [DashboardController],
 })

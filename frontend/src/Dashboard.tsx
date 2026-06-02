@@ -62,25 +62,26 @@ export default function Dashboard() {
 
   // Build time series chart data
   const chartData = (() => {
-    const map: Record<string, { revenue: number; orders: number }> = {};
-    timeSeries.forEach((r: any) => {
-      const platMatch = cPlat === 'all' || r.PLATFORM === cPlat;
-      const accMatch  = cAcc  === 'all' || r.ACCOUNT_NAME === cAcc;
-      if (!platMatch || !accMatch) return;
-      const mo = String(r.ORDER_MONTH).slice(0, 7);
-      if (!map[mo]) map[mo] = { revenue: 0, orders: 0 };
-      map[mo].revenue += Number(r.REVENUE);
-      map[mo].orders  += Number(r.ORDERS);
-    });
-    return Object.entries(map)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([month, d]) => ({
-        month: new Date(month + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-        revenue: d.revenue,
-        orders:  d.orders,
-        aov:     d.orders > 0 ? Math.round(d.revenue / d.orders) : 0,
-      }));
-  })();
+  const map: Record<string, { revenue: number; orders: number }> = {};
+  timeSeries.forEach((r: any) => {
+    const platMatch = cPlat === 'all' || r.PLATFORM === cPlat;
+    const accMatch  = cAcc  === 'all' || r.ACCOUNT_NAME === cAcc;
+    if (!platMatch || !accMatch) return;
+    // Support both ORDER_MONTH (old) and ORDER_DATE (new daily cache)
+    const dateStr = String(r.ORDER_MONTH || r.ORDER_DATE).slice(0, 7);
+    if (!map[dateStr]) map[dateStr] = { revenue: 0, orders: 0 };
+    map[dateStr].revenue += Number(r.REVENUE);
+    map[dateStr].orders  += Number(r.ORDERS);
+  });
+  return Object.entries(map)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, d]) => ({
+      month: new Date(month + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+      revenue: d.revenue,
+      orders:  d.orders,
+      aov:     d.orders > 0 ? Math.round(d.revenue / d.orders) : 0,
+    }));
+})();
 
   // Filtered shops and products
   const filteredShops = shops.filter((s: any) =>
@@ -254,7 +255,7 @@ export default function Dashboard() {
             </button>
          ))}
         </div>
-        
+
         {/* TABS */}
         <div style={S.tabs}>
           <button style={tabStyle('breakdown')} onClick={() => setActiveTab('breakdown')}>Account Breakdown</button>
