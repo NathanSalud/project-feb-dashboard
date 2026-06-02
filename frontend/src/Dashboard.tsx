@@ -105,7 +105,7 @@ export default function Dashboard() {
   };
 
   const S = {
-    page:    { minHeight:'100vh', background:'#0a0c10', color:'#dde1ec', fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:14 } as React.CSSProperties,
+    page:    { minHeight:'100vh', background:'#0a0c10', color:'#dde1ec', fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:14, width:'100%' } as React.CSSProperties,
     topbar:  { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'13px 24px', borderBottom:'1px solid rgba(255,255,255,0.06)', background:'#0a0c10', flexWrap:'wrap' as const, gap:10 } as React.CSSProperties,
     icon:    { width:30, height:30, borderRadius:7, background:'linear-gradient(135deg,#4b8ef0,#9b6ff0)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:'#fff' } as React.CSSProperties,
     badge:   { fontSize:11, color:'#454e63', background:'#10131a', border:'1px solid rgba(255,255,255,0.06)', borderRadius:6, padding:'2px 9px' } as React.CSSProperties,
