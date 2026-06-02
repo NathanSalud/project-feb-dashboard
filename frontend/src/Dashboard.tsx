@@ -11,6 +11,7 @@ export default function Dashboard() {
   const [dateFrom, setDateFrom] = useState('2023-01-01');
   const [dateTo, setDateTo]     = useState('2026-05-31');
   const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'>('breakdown');
+  const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
 
   const qOpts = { dateFrom, dateTo };
 
@@ -228,6 +229,32 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* GRANULARITY */}
+        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:12 }}>
+        <span style={{ fontSize:10, color:'#454e63', letterSpacing:'.4px', textTransform:'uppercase' as const, marginRight:4 }}>Granularity</span>
+        {(['day','week','month','quarter','year'] as const).map(g => (
+            <button
+            key={g}
+            onClick={() => g === 'month' && setGranularity(g)}
+            style={{
+                padding:'4px 10px',
+                borderRadius:7,
+                border:'1px solid rgba(255,255,255,0.06)',
+                fontSize:11,
+                fontFamily:'inherit',
+                cursor: g === 'month' ? 'pointer' : 'not-allowed',
+                background: granularity === g ? 'rgba(75,142,240,0.15)' : 'transparent',
+                color: granularity === g ? '#4b8ef0' : g === 'month' ? '#7e879e' : '#2a2f3d',
+                borderColor: granularity === g ? 'rgba(75,142,240,0.3)' : 'rgba(255,255,255,0.06)',
+                textTransform:'capitalize' as const,
+            }}
+            title={g !== 'month' ? 'Available in next phase' : ''}
+    >
+            {g}
+            </button>
+         ))}
+        </div>
+        
         {/* TABS */}
         <div style={S.tabs}>
           <button style={tabStyle('breakdown')} onClick={() => setActiveTab('breakdown')}>Account Breakdown</button>
