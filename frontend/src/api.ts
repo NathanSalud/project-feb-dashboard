@@ -4,16 +4,12 @@ const api = axios.create({
   baseURL: 'http://localhost:3000',
 });
 
-// Attach JWT token to every request automatically
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Redirect to login if token is expired or invalid
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -29,17 +25,17 @@ api.interceptors.response.use(
 export const login = (username: string, password: string) =>
   api.post('/auth/login', { username, password });
 
-export const getKpis = () =>
-  api.get('/dashboard/kpis');
+export const getKpis = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/kpis', { params: { dateFrom, dateTo } });
 
-export const getTimeSeries = () =>
-  api.get('/dashboard/timeseries');
+export const getTimeSeries = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo } });
 
-export const getShops = () =>
-  api.get('/dashboard/shops');
+export const getShops = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/shops', { params: { dateFrom, dateTo } });
 
-export const getProducts = () =>
-  api.get('/dashboard/products');
+export const getProducts = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/products', { params: { dateFrom, dateTo } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');

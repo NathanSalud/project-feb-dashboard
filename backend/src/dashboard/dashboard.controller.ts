@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Query } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtGuard } from '../auth/jwt/jwt.guard';
 
@@ -8,35 +8,23 @@ export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
 
   @Get('kpis')
-  getKpis(@Request() req) {
-    return this.dashboardService.getKpis(
-      req.user.companyName,
-      req.user.isAdmin,
-    );
+  getKpis(@Request() req, @Query('dateFrom') dateFrom?: string, @Query('dateTo') dateTo?: string) {
+    return this.dashboardService.getKpis(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
   }
 
   @Get('timeseries')
-  getTimeSeries(@Request() req) {
-    return this.dashboardService.getTimeSeries(
-      req.user.companyName,
-      req.user.isAdmin,
-    );
+  getTimeSeries(@Request() req, @Query('dateFrom') dateFrom?: string, @Query('dateTo') dateTo?: string) {
+    return this.dashboardService.getTimeSeries(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
   }
 
   @Get('shops')
-  getShops(@Request() req) {
-    return this.dashboardService.getShops(
-      req.user.companyName,
-      req.user.isAdmin,
-    );
+  getShops(@Request() req, @Query('dateFrom') dateFrom?: string, @Query('dateTo') dateTo?: string) {
+    return this.dashboardService.getShops(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
   }
 
   @Get('products')
-  getProducts(@Request() req) {
-    return this.dashboardService.getProducts(
-      req.user.companyName,
-      req.user.isAdmin,
-    );
+  getProducts(@Request() req, @Query('dateFrom') dateFrom?: string, @Query('dateTo') dateTo?: string) {
+    return this.dashboardService.getProducts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
   }
 
   @Get('accounts')
