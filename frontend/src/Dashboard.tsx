@@ -25,15 +25,17 @@ export default function Dashboard() {
     queryFn: () => getTimeSeries(dateFrom, dateTo).then(r => r.data),
   });
 
-  const { data: shops = [], isFetching: sFetch } = useQuery({
-    queryKey: ['shops', dateFrom, dateTo],
-    queryFn: () => getShops(dateFrom, dateTo).then(r => r.data),
-  });
+  const { data: shopsRes, isFetching: sFetch } = useQuery({
+  queryKey: ['shops', dateFrom, dateTo],
+  queryFn: () => getShops(dateFrom, dateTo).then(r => r.data),
+});
+const shops = shopsRes?.data ?? [];
 
-  const { data: products = [], isFetching: pFetch } = useQuery({
-    queryKey: ['products', dateFrom, dateTo],
-    queryFn: () => getProducts(dateFrom, dateTo).then(r => r.data),
-  });
+const { data: productsRes, isFetching: pFetch } = useQuery({
+  queryKey: ['products', dateFrom, dateTo],
+  queryFn: () => getProducts(dateFrom, dateTo).then(r => r.data),
+});
+const products = productsRes?.data ?? [];
 
   const isLoading = kFetch || tFetch || sFetch || pFetch;
 
@@ -47,15 +49,37 @@ export default function Dashboard() {
     (cAcc  === 'all' || k.ACCOUNT_NAME === cAcc)
   );
 
-  // Aggregate totals
-  const totals = filteredKpis.reduce((acc: any, k: any) => ({
-    revenue: (acc.revenue || 0) + Number(k.REVENUE),
-    orders:  (acc.orders  || 0) + Number(k.ORDERS),
-    items:   (acc.items   || 0) + Number(k.ITEMS),
-    pd:      (acc.pd      || 0) + Number(k.PLATFORM_DISCOUNT),
-    sd:      (acc.sd      || 0) + Number(k.SELLER_DISCOUNT),
-    ship:    (acc.ship    || 0) + Number(k.SHIPPING_DISCOUNT),
+  // Aggregate totals from time series (date-aware) for revenue and orders
+// Use filteredKpis for discount metrics (no date field available)
+const tsRevOrd = timeSeries
+  .filter((r: any) =>
+    (cPlat === 'all' || r.PLATFORM === cPlat) &&
+    (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc)
+  )
+  .reduce((acc: any, r: any) => ({
+    revenue: (acc.revenue || 0) + Number(r.REVENUE),
+    orders:  (acc.orders  || 0) + Number(r.ORDERS),
   }), {});
+
+// Discount ratios scaled from KPI data
+const kpiBase = filteredKpis.reduce((acc: any, k: any) => ({
+  revenue: (acc.revenue || 0) + Number(k.REVENUE),
+  pd:      (acc.pd      || 0) + Number(k.PLATFORM_DISCOUNT),
+  sd:      (acc.sd      || 0) + Number(k.SELLER_DISCOUNT),
+  ship:    (acc.ship    || 0) + Number(k.SHIPPING_DISCOUNT),
+  items:   (acc.items   || 0) + Number(k.ITEMS),
+}), {});
+
+const discRatio = kpiBase.revenue > 0 ? (tsRevOrd.revenue || 0) / kpiBase.revenue : 1;
+
+const totals = {
+  revenue: tsRevOrd.revenue || 0,
+  orders:  tsRevOrd.orders  || 0,
+  items:   Math.round((kpiBase.items || 0) * discRatio),
+  pd:      (kpiBase.pd   || 0) * discRatio,
+  sd:      (kpiBase.sd   || 0) * discRatio,
+  ship:    (kpiBase.ship || 0) * discRatio,
+};
 
   const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;
   const discRate = totals.revenue > 0 ? (((totals.pd + totals.sd) / totals.revenue) * 100).toFixed(1) : '0.0';

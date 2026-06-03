@@ -4,6 +4,7 @@ import { SnowflakeModule } from './snowflake/snowflake.module';
 import { AuthModule } from './auth/auth.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { CacheModule } from './cache/cache.module';
+import { AppController } from './app.controller';
 
 @Module({
   imports: [
@@ -13,5 +14,6 @@ import { CacheModule } from './cache/cache.module';
     CacheModule,
     DashboardModule,
   ],
+  controllers: [AppController],
 })
 export class AppModule {}
