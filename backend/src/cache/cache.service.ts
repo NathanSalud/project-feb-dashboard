@@ -29,6 +29,8 @@ export class CacheService implements OnModuleInit {
         this.refreshShops(),
         this.refreshProducts(),
         this.refreshAccounts(),
+        this.refreshGeo(),
+        this.refreshDiscounts(),
       ]);
       this.lastRefreshed = new Date();
       this.logger.log(`Cache refreshed successfully at ${this.lastRefreshed.toISOString()}`);
@@ -137,6 +139,86 @@ export class CacheService implements OnModuleInit {
     this.logger.log(`Products cached — ${data.length} rows`);
   }
 
+  private normaliseProvince(raw: string): string {
+  if (!raw) return 'Unknown';
+  // Masked Cavite entry
+  if (raw === 'C****e') return 'Cavite';
+  // TikTok stores Manila as a separate entry — roll into Metro Manila
+  if (raw === 'Manila') return 'Metro Manila';
+  // Shopee stores city-level Metro Manila entries e.g. Metro Manila~Quezon City
+  if (raw.startsWith('Metro Manila~')) return 'Metro Manila';
+  return raw;
+}
+
+private async refreshGeo() {
+  const data = await this.snowflake.query(`
+    SELECT
+      a.COMPANY_NAME,
+      a.ACCOUNT_NAME,
+      a.PLATFORM,
+      f.SHIPPING_PROVINCE,
+      COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
+      ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
+    FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
+    INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
+    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    AND f.ORDER_DATE >= '2023-01-01'
+    AND a.IS_ACTIVE = TRUE
+    AND a.ACCOUNT_NAME != 's'
+    AND f.SHIPPING_PROVINCE IS NOT NULL
+    AND f.SHIPPING_PROVINCE != ''
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, f.SHIPPING_PROVINCE
+    ORDER BY a.COMPANY_NAME, REVENUE DESC
+  `);
+
+  // Normalise province names and merge duplicates
+  const merged: Record<string, any> = {};
+  data.forEach((r: any) => {
+    const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
+    const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
+    if (!merged[key]) {
+      merged[key] = {
+        COMPANY_NAME:      r.COMPANY_NAME,
+        ACCOUNT_NAME:      r.ACCOUNT_NAME,
+        PLATFORM:          r.PLATFORM,
+        SHIPPING_PROVINCE: province,
+        ORDERS:            0,
+        REVENUE:           0,
+      };
+    }
+    merged[key].ORDERS  += Number(r.ORDERS);
+    merged[key].REVENUE += Number(r.REVENUE);
+  });
+
+  const result = Object.values(merged);
+  this.cache.set('geo', result);
+  this.logger.log(`Geo cached — ${result.length} rows`);
+}
+
+private async refreshDiscounts() {
+  const data = await this.snowflake.query(`
+    SELECT
+      a.COMPANY_NAME,
+      a.ACCOUNT_NAME,
+      a.PLATFORM,
+      DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
+      ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
+      ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
+      ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2)  AS SHIPPING_DISCOUNT,
+      ROUND(SUM(f.SELLER_SHIPPING_FEE_DISCOUNT), 2)    AS SELLER_SHIPPING_DISCOUNT
+    FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
+    INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
+    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    AND f.ORDER_DATE >= '2023-01-01'
+    AND a.IS_ACTIVE = TRUE
+    AND a.ACCOUNT_NAME != 's'
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+  `);
+  this.cache.set('discounts', data);
+  this.logger.log(`Discounts cached — ${data.length} rows`);
+}
+
   private async refreshAccounts() {
     const data = await this.snowflake.query(`
       SELECT DISTINCT
@@ -176,6 +258,16 @@ export class CacheService implements OnModuleInit {
   getAccounts() {
     return this.cache.get('accounts') || [];
   }
+
+  getGeo(companyName: string, isAdmin: boolean) {
+  const data = (this.cache.get('geo') || []) as any[];
+  return this.filterCompany(data, companyName, isAdmin);
+}
+
+getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  const data = (this.cache.get('discounts') || []) as any[];
+  return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+}
 
   getStatus() {
     return {

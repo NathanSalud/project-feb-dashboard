@@ -60,6 +60,24 @@ export class DashboardController {
     return this.dashboardService.getAccounts();
   }
 
+  @Get('geo')
+  getGeo(
+    @Request() req,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+  }
+
+  @Get('discounts')
+  getDiscounts(
+    @Request() req,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.dashboardService.getDiscounts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+  }
+
   @Get('status')
   getStatus() {
     return this.dashboardService.getStatus();

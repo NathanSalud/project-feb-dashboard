@@ -40,4 +40,10 @@ export const getProducts = (dateFrom?: string, dateTo?: string) =>
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
+export const getGeo = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/geo', { params: { dateFrom, dateTo } });
+
+export const getDiscounts = (dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/discounts', { params: { dateFrom, dateTo } });
+
 export default api;
