@@ -200,56 +200,45 @@ export default function Dashboard() {
   };
 
   const generateInsights = async () => {
-    setInsightLoading(true);
-    setInsights('');
-    const summary = {
-      company:    user?.isAdmin ? 'All Companies (GDEC Admin)' : user?.companyName,
-      dateRange:  `${dateFrom} to ${dateTo}`,
-      filters:    { account: cAcc, platform: cPlat },
-      kpis: {
-        totalRevenue:    fmt(totals.revenue),
-        totalOrders:     fmtN(totals.orders),
-        aov:             fmt(aov),
-        discountRate:    discRate + '%',
-        totalDiscount:   fmt(totals.pd + totals.sd),
-        shippingDiscount: fmt(totals.ship),
-      },
-      topPlatform:   platPie.sort((a,b)=>b.value-a.value)[0]?.name || 'N/A',
-      topProvince:   geoData[0]?.name || 'N/A',
-      chartTrend:    chartData.length > 1
-        ? (chartData[chartData.length-1].revenue > chartData[0].revenue ? 'upward' : 'downward')
-        : 'insufficient data',
-    };
-
-    try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{
-            role: 'user',
-            content: `You are a senior business analyst for Great Deals E-Commerce Corp (GDEC), a Philippine e-commerce enabler managing brand stores on Shopee, Lazada, and TikTok Shop.
-
-Analyze this dashboard data and provide 5-6 concise, actionable business insights in plain English. Focus on what the numbers mean for the business, not just what they are. Flag risks, opportunities, and recommended next actions. Be direct and executive-ready.
-
-Dashboard data:
-${JSON.stringify(summary, null, 2)}
-
-Format your response as a numbered list. Each insight should be 2-3 sentences maximum.`
-          }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.[0]?.text || 'Unable to generate insights at this time.';
-      setInsights(text);
-    } catch {
-      setInsights('Unable to generate insights. Please check your connection and try again.');
-    } finally {
-      setInsightLoading(false);
-    }
+  setInsightLoading(true);
+  setInsights('');
+  const summary = {
+    company:    user?.isAdmin ? 'All Companies (GDEC Admin)' : user?.companyName,
+    dateRange:  `${dateFrom} to ${dateTo}`,
+    filters:    { account: cAcc, platform: cPlat },
+    kpis: {
+      totalRevenue:     fmt(totals.revenue),
+      totalOrders:      fmtN(totals.orders),
+      aov:              fmt(aov),
+      discountRate:     discRate + '%',
+      totalDiscount:    fmt(totals.pd + totals.sd),
+      shippingDiscount: fmt(totals.ship),
+    },
+    topPlatform:  platPie.sort((a,b) => b.value - a.value)[0]?.name || 'N/A',
+    topProvince:  geoData[0]?.name || 'N/A',
+    chartTrend:   chartData.length > 1
+      ? (chartData[chartData.length-1].revenue > chartData[0].revenue ? 'upward' : 'downward')
+      : 'insufficient data',
   };
+
+  try {
+    const token = localStorage.getItem('token');
+    const res = await fetch('http://localhost:3000/insights/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(summary),
+    });
+    const text = await res.text();
+    setInsights(text);
+  } catch (err: any) {
+    setInsights(`Error: ${err?.message || 'Unknown error. Please try again.'}`);
+  } finally {
+    setInsightLoading(false);
+  }
+};
 
   const filteredShops    = shops.filter((s: any) => (cPlat==='all'||s.PLATFORM===cPlat)&&(cAcc==='all'||s.ACCOUNT_NAME===cAcc));
   const filteredProducts = products.filter((p: any) => (cPlat==='all'||p.PLATFORM===cPlat)&&(cAcc==='all'||p.ACCOUNT_NAME===cAcc));
