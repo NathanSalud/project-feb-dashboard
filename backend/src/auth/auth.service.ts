@@ -10,7 +10,7 @@ export interface User {
   isAdmin: boolean;
 }
 
-const HASH = '$2b$10$gYWxcBc5qepP9lKBdNJv3uovaRzQH3UHhDG6YcQ9ZoPun4cBIQn9C';
+const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
 
 const USERS: { username: string; passwordHash: string; user: User }[] = [
   {
