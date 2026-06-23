@@ -69,14 +69,16 @@ export default function Dashboard() {
 
   const filteredKpis = kpis.filter((k: any) =>
     (cPlat === 'all' || k.PLATFORM === cPlat) &&
-    (cAcc  === 'all' || k.ACCOUNT_NAME === cAcc)
+    (cAcc  === 'all' || k.ACCOUNT_NAME === cAcc) &&
+    (user?.isAdmin || user?.accountNames?.includes(k.ACCOUNT_NAME))
   );
 
   // KPI totals from time series (date-aware)
   const tsRevOrd = timeSeries
     .filter((r: any) =>
       (cPlat === 'all' || r.PLATFORM === cPlat) &&
-      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc)
+      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
+      (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
     )
     .reduce((acc: any, r: any) => ({
       revenue: (acc.revenue || 0) + Number(r.REVENUE),
@@ -147,7 +149,8 @@ export default function Dashboard() {
   const geoData = (() => {
     const filtered = geoRaw.filter((r: any) =>
       (cPlat === 'all' || r.PLATFORM === cPlat) &&
-      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc)
+      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
+      (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
     );
     const map: Record<string, number> = {};
     filtered.forEach((r: any) => {
@@ -164,6 +167,7 @@ export default function Dashboard() {
     const map: Record<string, {pd:number;sd:number;ship:number;sship:number}> = {};
     discountsRaw.forEach((r: any) => {
       if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
+      if(!user?.isAdmin && !user?.accountNames?.includes(r.ACCOUNT_NAME)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE).slice(0,10);
       const key = groupKey(raw);
       if(!map[key]) map[key] = {pd:0,sd:0,ship:0,sship:0};
