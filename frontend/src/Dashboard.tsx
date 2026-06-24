@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts } from './api';
+import { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
 import gdecLogo from './assets/gdec-logo.png';
 
 const TEAL   = '#1a7a8a';
@@ -30,8 +30,10 @@ export default function Dashboard() {
   const [cPlat, setCPlat]         = useState('all');
   const [dateFrom, setDateFrom]   = useState('2023-01-01');
   const [dateTo, setDateTo]       = useState('2026-05-31');
-  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'>('breakdown');
+  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
+  const [sortCol, setSortCol] = useState<string>('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [insights, setInsights]   = useState<string>('');
   const [insightLoading, setInsightLoading] = useState(false);
 
@@ -61,8 +63,41 @@ export default function Dashboard() {
     queryKey: ['discounts', dateFrom, dateTo],
     queryFn: () => getDiscounts(dateFrom, dateTo).then(r => r.data),
   });
+  const { data: doiRaw = [] } = useQuery({
+    queryKey: ['doi'],
+    queryFn: () => getDoi().then(r => r.data),
+    enabled: !!user?.isAdmin || (!!user?.customerIds && user.customerIds.length > 0),
+  });
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
+
+  const handleSort = (col: string) => {
+    if (sortCol === col) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  };
+
+  const sortData = (data: any[], col: string) => {
+    if (!col) return data;
+    return [...data].sort((a, b) => {
+      const av = a[col] ?? 0;
+      const bv = b[col] ?? 0;
+      if (typeof av === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      return sortDir === 'asc' ? av - bv : bv - av;
+    });
+  };
+
+  const SortHeader = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', padding: '8px 6px' }}
+      onClick={() => handleSort(col)}
+    >
+      {label} {sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+    </th>
+  );
 
   const platforms = [...new Set(kpis.map((k: any) => k.PLATFORM))] as string[];
   const accounts  = [...new Set(kpis.map((k: any) => k.ACCOUNT_NAME))] as string[];
@@ -357,9 +392,9 @@ export default function Dashboard() {
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {(['breakdown','shops','products'] as const).map(t => (
-            <button key={t} onClick={() => setActiveTab(t)} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
-              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : 'Top Products'}
+          {(['breakdown','shops','products', ...(user?.isAdmin || (user?.customerIds && user.customerIds.length > 0) ? ['doi'] as const : [])] as const).map(t => (
+            <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
+              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
           ))}
         </div>
@@ -368,10 +403,10 @@ export default function Dashboard() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1 }}>
-                {activeTab === 'breakdown' ? 'Account & Platform Breakdown' : activeTab === 'shops' ? 'Shop Performance' : 'Top Products by Revenue'}
+                {activeTab === 'breakdown' ? 'Account & Platform Breakdown' : activeTab === 'shops' ? 'Shop Performance' : activeTab === 'products' ? 'Top Products' : 'Inventory & Days of Inventory'}
               </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginTop: 2 }}>
-                {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV by SHOP_ID' : 'Best selling items by revenue · filtered period'}
+                {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by revenue · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters'}
               </div>
             </div>
             <button onClick={() => exportCSV(activeTab==='breakdown'?filteredKpis:activeTab==='shops'?filteredShops:filteredProducts, `${activeTab}.csv`)}
@@ -379,7 +414,7 @@ export default function Dashboard() {
               ⬇ Export CSV
             </button>
           </div>
-          <div style={{ overflowX: 'auto' }}>
+          <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
             {activeTab === 'breakdown' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
@@ -447,6 +482,38 @@ export default function Dashboard() {
                 </tbody>
               </table>
             )}
+            {activeTab === 'doi' && (
+            <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
+              <thead><tr>
+                {['CUSTOMER_ID','PRODUCT_SKU','PRODUCT_NAME','INVENTORY_QTY','ORDERED_3M','DAILY_AVG_SOLD','DOI'].map((col, i) => (
+                  <th key={col}
+                    onClick={() => handleSort(col)}
+                    style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i >= 3 ? 'right' : 'left' }}>
+                    {col === 'CUSTOMER_ID' ? 'Customer' : col === 'PRODUCT_SKU' ? 'SKU' : col === 'PRODUCT_NAME' ? 'Product' : col === 'INVENTORY_QTY' ? 'Inventory Qty' : col === 'ORDERED_3M' ? 'Ordered (3M)' : col === 'DAILY_AVG_SOLD' ? 'Daily Avg' : 'DOI (Days)'}
+                    {' '}{sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                  </th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {sortData(doiRaw, sortCol).map((r: any, i: number) => {
+                  const isLow = r.DOI !== null && r.DOI < 14;
+                  return (
+                    <tr key={i} style={{ background: isLow ? '#fff0f0' : i % 2 === 0 ? WHITE : '#fafbfc' }}>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: isLow ? '#d32f2f' : TEXT1, fontWeight: isLow ? 600 : 400 }}>{r.CUSTOMER_ID}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>{r.PRODUCT_SKU}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.PRODUCT_NAME}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.INVENTORY_QTY).toLocaleString()}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.ORDERED_3M).toLocaleString()}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.DAILY_AVG_SOLD).toLocaleString()}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', color: isLow ? '#d32f2f' : r.DOI === null ? TEXT3 : TEXT1, fontWeight: isLow ? 700 : 400, fontFamily: 'JetBrains Mono, monospace' }}>
+                        {r.DOI === null ? 'No orders' : `${Number(r.DOI).toLocaleString()} days`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
           </div>
         </div>
 
