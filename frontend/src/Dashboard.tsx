@@ -36,6 +36,7 @@ export default function Dashboard() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [insights, setInsights]   = useState<string>('');
   const [insightLoading, setInsightLoading] = useState(false);
+  const [doiCustomer, setDoiCustomer] = useState('all');
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
     queryKey: ['kpis', dateFrom, dateTo],
@@ -68,6 +69,8 @@ export default function Dashboard() {
     queryFn: () => getDoi().then(r => r.data),
     enabled: !!user?.isAdmin || (!!user?.customerIds && user.customerIds.length > 0),
   });
+  const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
+  const doiFiltered = doiCustomer === 'all' ? doiRaw : (doiRaw as any[]).filter(r => r.CUSTOMER_ID === doiCustomer);
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
 
@@ -401,10 +404,18 @@ export default function Dashboard() {
                 {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by revenue · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters'}
               </div>
             </div>
-            <button onClick={() => exportCSV(activeTab==='breakdown'?filteredKpis:activeTab==='shops'?filteredShops:filteredProducts, `${activeTab}.csv`)}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {activeTab === 'doi' && (
+  <select value={doiCustomer} onChange={e => setDoiCustomer(e.target.value)}
+    style={{ marginRight: 8, padding: '5px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: TEXT2, background: WHITE, cursor: 'pointer' }}>
+    <option value="all">All customers</option>
+    {doiCustomers.map(c => <option key={c} value={c}>{c}</option>)}
+  </select>
+)}<button onClick={() => exportCSV(activeTab==='breakdown'?filteredKpis:activeTab==='shops'?filteredShops:activeTab==='products'?filteredProducts:doiFiltered, `${activeTab}.csv`)}
               style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: '#22c98a', background: WHITE, cursor: 'pointer' }}>
               ⬇ Export CSV
             </button>
+            </div>
           </div>
           <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
             {activeTab === 'breakdown' && (
@@ -487,7 +498,7 @@ export default function Dashboard() {
                 ))}
               </tr></thead>
               <tbody>
-                {sortData(doiRaw, sortCol).map((r: any, i: number) => {
+                {sortData(doiFiltered, sortCol).map((r: any, i: number) => {
                   const isLow = r.DOI !== null && r.DOI < 14;
                   return (
                     <tr key={i} style={{ background: isLow ? '#fff0f0' : i % 2 === 0 ? WHITE : '#fafbfc' }}>
