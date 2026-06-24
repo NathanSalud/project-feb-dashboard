@@ -8,6 +8,7 @@ interface User {
   accountNames: string[];
   platforms: string[];
   isAdmin: boolean;
+  customerIds?: string[];
 }
 
 interface AuthContextType {

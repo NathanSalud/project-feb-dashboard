@@ -8,9 +8,66 @@ export interface User {
   accountNames: string[];
   platforms: string[];
   isAdmin: boolean;
+  customerIds?: string[];
 }
 
 const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
+
+const CUSTOMER_ID_MAP: Record<string, string[]> = {
+  'GDEC Admin': [],
+  'Alaska Milk Corporation': ['ALASKA'],
+  'San Miguel Foods, Inc.': ['SMAHPC', 'SMFI', 'SMFROZEN'],
+  'Nestlé Philippines Inc.': ['NESTLE', 'NESTLERETAIL'],
+  'Unilever Philippines': ['UNILEVER'],
+  'Abbott Laboratories': ['ABBOTT'],
+  'Century Pacific Foods Inc.': ['CENTURY', 'CENTURYFROZEN'],
+  'Del Monte Philippines': ['DMPI'],
+  'Procter & Gamble': ['PG', 'PGHEALTH', 'PGPAMPERS'],
+  'Bayer Philippines': ['BAYER'],
+  "L'Oreal Philippines": ['LOREAL'],
+  'Beiersdorf Philippines': ['NIVEA', 'NIVEAWS'],
+  'Reckitt Benckiser': ['RECKITTHB', 'RECKITTWELLNES'],
+  'SC Johnson': ['SCJ'],
+  'GSK / Haleon': ['GSK'],
+  'Mars Petcare': ['PEDIGREE'],
+  'Royal Canin': ['RC'],
+  'Samsonite': ['SAMSONITE'],
+  'Unicharm': ['UNICHARM'],
+  'Mega Global Corporation': ['MEGA'],
+  'Ovaltine': ['OVALTINE'],
+  'NutriAsia': ['NUTRIASIA'],
+  'Liwayway': ['LIWAYWAY'],
+  'Personal Collection': ['PC'],
+  'Fonterra': ['FONTERRA'],
+  'Green Cross Inc.': ['GREENCROSS'],
+  'Shell Philippines': ['SHELL'],
+  'Diageo': ['DIAGEO'],
+  'Splash Corporation': ['SPLASH'],
+  'Pascual Laboratories': ['PASCUAL'],
+  'Perfetti Van Melle': ['PERFETTI'],
+  'Lysol Philippines': ['LYSOL'],
+  'Lee Kum Kee': ['LEEKUMKEE'],
+  "C'scor": ['CSCOR'],
+  'ATC Healthcare': ['ATC'],
+  'Betadine': ['BETADINE'],
+  'Beauty Avenue': ['BEAUTYAVE'],
+  'URC': ['URC'],
+  'MamyPoko': ['MAMYPOKO'],
+  'Noah': ['NOAH'],
+  'JS Unitrade': ['JSU'],
+  'Kellanova': ['KELLANOVA'],
+  'Earth Home Care': ['EHOMECARE'],
+  'Gentle Supreme': ['GSPI'],
+  'Ardent World': ['ARDENT'],
+  'RMK Beauty': ['RMKBEAUTY'],
+  'RMK Fashion': ['RMKFASHION'],
+  'RMK GM': ['RMKGM'],
+  'Inova': ['INOVA'],
+  '7Luxe': ['7LUXE'],
+  'Goon': ['GOON'],
+  'Easy Spirit': ['EASYSPIRIT'],
+  'Purina': ['PURINA'],
+};
 
 const USERS: { username: string; passwordHash: string; user: User }[] = [
   {
@@ -516,6 +573,7 @@ export class AuthService {
       accountNames: record.user.accountNames,
       platforms:    record.user.platforms,
       isAdmin:      record.user.isAdmin,
+      customerIds:  CUSTOMER_ID_MAP[record.user.companyName] || [],
     };
 
     return {

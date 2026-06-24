@@ -46,4 +46,7 @@ export const getGeo = (dateFrom?: string, dateTo?: string) =>
 export const getDiscounts = (dateFrom?: string, dateTo?: string) =>
   api.get('/dashboard/discounts', { params: { dateFrom, dateTo } });
 
+export const getDoi = () =>
+  api.get('/dashboard/doi');
+
 export default api;

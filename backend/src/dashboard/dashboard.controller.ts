@@ -82,4 +82,12 @@ export class DashboardController {
   getStatus() {
     return this.dashboardService.getStatus();
   }
+
+  @Get('doi')
+  getDoi(@Request() req) {
+    return this.dashboardService.getDoi(
+      req.user.customerIds || [],
+      req.user.isAdmin,
+    );
+  }
 }

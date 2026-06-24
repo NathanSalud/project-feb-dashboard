@@ -31,6 +31,7 @@ export class CacheService implements OnModuleInit {
         this.refreshAccounts(),
         this.refreshGeo(),
         this.refreshDiscounts(),
+        this.refreshDoi(),
       ]);
       this.lastRefreshed = new Date();
       this.logger.log(`Cache refreshed successfully at ${this.lastRefreshed.toISOString()}`);
@@ -233,6 +234,49 @@ private async refreshDiscounts() {
     this.logger.log(`Accounts cached — ${data.length} rows`);
   }
 
+  private async refreshDoi() {
+    const data = await this.snowflake.query(`
+      WITH inventory AS (
+        SELECT
+          CUSTOMER_ID,
+          PRODUCT_SKU,
+          MAX(PRODUCT_NAME) AS PRODUCT_NAME,
+          SUM(TOTAL_QUANTITY) AS INVENTORY_QTY
+        FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_WMS_INVENTORY
+        WHERE IS_ACTIVE = TRUE
+        GROUP BY CUSTOMER_ID, PRODUCT_SKU
+        HAVING SUM(TOTAL_QUANTITY) > 0
+      ),
+      orders_3m AS (
+        SELECT
+          CUSTOMER_ID,
+          PRODUCT_SKU,
+          SUM(QUANTITY_ORDERED) AS QTY_ORDERED_3M
+        FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_WMS_ORDER_ITEMS
+        WHERE ORDER_CREATED_AT_PHT >= DATEADD('day', -90, CURRENT_DATE())
+        GROUP BY CUSTOMER_ID, PRODUCT_SKU
+      )
+      SELECT
+        i.CUSTOMER_ID,
+        i.PRODUCT_SKU,
+        i.PRODUCT_NAME,
+        i.INVENTORY_QTY,
+        COALESCE(o.QTY_ORDERED_3M, 0) AS ORDERED_3M,
+        ROUND(COALESCE(o.QTY_ORDERED_3M, 0) / 90, 2) AS DAILY_AVG_SOLD,
+        CASE
+          WHEN COALESCE(o.QTY_ORDERED_3M, 0) = 0 THEN NULL
+          ELSE ROUND(i.INVENTORY_QTY / (o.QTY_ORDERED_3M / 90), 1)
+        END AS DOI
+      FROM inventory i
+      LEFT JOIN orders_3m o
+        ON i.CUSTOMER_ID = o.CUSTOMER_ID
+        AND i.PRODUCT_SKU = o.PRODUCT_SKU
+      ORDER BY i.CUSTOMER_ID, DOI ASC NULLS LAST
+    `);
+    this.cache.set('doi', data);
+    this.logger.log(`DOI cached — ${data.length} rows`);
+  }
+
   // ── PUBLIC GETTERS ──────────────────────────────────────────────
 
  getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
@@ -268,6 +312,12 @@ getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: 
   const data = (this.cache.get('discounts') || []) as any[];
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
+
+getDoi(customerIds: string[], isAdmin: boolean) {
+    const data = (this.cache.get('doi') || []) as any[];
+    if (isAdmin) return data;
+    return data.filter(r => customerIds.includes(r.CUSTOMER_ID));
+  }
 
   getStatus() {
     return {
