@@ -37,7 +37,19 @@ export class SnowflakeService implements OnModuleInit {
     });
   }
 
-  query<T = any>(sql: string, binds: any[] = []): Promise<T[]> {
+  private async ensureConnection(): Promise<void> {
+    const valid = await new Promise<boolean>((resolve) => {
+      if (!this.connection) return resolve(false);
+      this.connection.isValidAsync().then(resolve).catch(() => resolve(false));
+    });
+    if (!valid) {
+      this.logger.warn('Snowflake connection invalid, reconnecting...');
+      await this.connect();
+    }
+  }
+
+  async query<T = any>(sql: string, binds: any[] = []): Promise<T[]> {
+    await this.ensureConnection();
     return new Promise((resolve, reject) => {
       this.connection.execute({
         sqlText: sql,
