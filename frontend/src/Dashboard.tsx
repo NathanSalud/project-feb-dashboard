@@ -90,14 +90,6 @@ export default function Dashboard() {
     });
   };
 
-  const SortHeader = ({ col, label }: { col: string; label: string }) => (
-    <th
-      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', padding: '8px 6px' }}
-      onClick={() => handleSort(col)}
-    >
-      {label} {sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
-    </th>
-  );
 
   const platforms = [...new Set(kpis.map((k: any) => k.PLATFORM))] as string[];
   const accounts  = [...new Set(kpis.map((k: any) => k.ACCOUNT_NAME))] as string[];
