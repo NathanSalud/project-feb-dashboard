@@ -1,6 +1,8 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { KnexService } from '../database/knex.service';
 
 export interface User {
   username: string;
@@ -11,9 +13,9 @@ export interface User {
   customerIds?: string[];
 }
 
-const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
+export const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
 
-const CUSTOMER_ID_MAP: Record<string, string[]> = {
+export const CUSTOMER_ID_MAP: Record<string, string[]> = {
   'GDEC Admin': [],
   'Alaska Milk Corporation': ['ALASKA'],
   'San Miguel Foods, Inc.': ['SMAHPC', 'SMFI', 'SMFROZEN'],
@@ -69,7 +71,7 @@ const CUSTOMER_ID_MAP: Record<string, string[]> = {
   'Purina': ['PURINA'],
 };
 
-const USERS: { username: string; passwordHash: string; user: User }[] = [
+export const USERS: { username: string; passwordHash: string; user: User }[] = [
   {
     username: 'gdec_admin',
     passwordHash: HASH,
@@ -556,29 +558,77 @@ const USERS: { username: string; passwordHash: string; user: User }[] = [
   },
 ];
 
+export interface AuthPayload {
+  username: string;
+  companyName: string;
+  accountNames: string[];
+  platforms: string[];
+  isAdmin: boolean;
+  customerIds: string[];
+}
+
 @Injectable()
 export class AuthService {
-  constructor(private jwt: JwtService) {}
+  constructor(
+    private jwt: JwtService,
+    private config: ConfigService,
+    private knexService: KnexService,
+  ) {}
 
   async login(username: string, password: string) {
+    // AUTH_SOURCE=memory falls back to the hardcoded USERS array (instant
+    // rollback while the DB path is being verified). Default is the DB.
+    const payload =
+      this.config.get<string>('AUTH_SOURCE') === 'memory'
+        ? await this.loginFromMemory(username, password)
+        : await this.loginFromDb(username, password);
+
+    return {
+      access_token: this.jwt.sign(payload),
+      user: payload,
+    };
+  }
+
+  private async loginFromDb(
+    username: string,
+    password: string,
+  ): Promise<AuthPayload> {
+    const row = await this.knexService
+      .knex('users')
+      .where({ username: username.toLowerCase() })
+      .first();
+    if (!row) throw new UnauthorizedException('Invalid credentials');
+
+    const valid = await bcrypt.compare(password, row.password_hash);
+    if (!valid) throw new UnauthorizedException('Invalid credentials');
+
+    return {
+      username:     row.username,
+      companyName:  row.company_name,
+      accountNames: row.account_names || [],
+      platforms:    row.platforms || [],
+      isAdmin:      row.is_admin,
+      customerIds:  row.customer_ids || [],
+    };
+  }
+
+  private async loginFromMemory(
+    username: string,
+    password: string,
+  ): Promise<AuthPayload> {
     const record = USERS.find(u => u.username === username.toLowerCase());
     if (!record) throw new UnauthorizedException('Invalid credentials');
 
     const valid = await bcrypt.compare(password, record.passwordHash);
     if (!valid) throw new UnauthorizedException('Invalid credentials');
 
-    const payload = {
+    return {
       username:     record.user.username,
       companyName:  record.user.companyName,
       accountNames: record.user.accountNames,
       platforms:    record.user.platforms,
       isAdmin:      record.user.isAdmin,
       customerIds:  CUSTOMER_ID_MAP[record.user.companyName] || [],
-    };
-
-    return {
-      access_token: this.jwt.sign(payload),
-      user: payload,
     };
   }
 }
