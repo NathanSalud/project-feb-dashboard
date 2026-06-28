@@ -1,10 +1,11 @@
-import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { Injectable, ExecutionContext, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 
 @Injectable()
 export class JwtGuard {
+  private readonly logger = new Logger(JwtGuard.name);
   constructor(
     private jwt: JwtService,
     private config: ConfigService,
@@ -22,7 +23,10 @@ export class JwtGuard {
       });
       request['user'] = payload;
       return true;
-    } catch {
+    } catch (err) {
+      // 'invalid signature' ⇒ JWT_SECRET differs from the signer's;
+      // 'jwt expired' ⇒ real expiry. Logging only — auth behaviour unchanged.
+      this.logger.warn(`JWT verify failed (pid ${process.pid}): ${(err as Error).message}`);
       throw new UnauthorizedException('Invalid or expired token');
     }
   }
