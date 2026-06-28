@@ -14,14 +14,23 @@ function isTokenExpired(token: string): boolean {
   }
 }
 
+// Endpoints reachable without a token (login, and any future public auth
+// routes like register/refresh under /auth/).
+const PUBLIC_PATHS = ['/auth/'];
+const isPublicPath = (url?: string) => !!url && PUBLIC_PATHS.some((p) => url.includes(p));
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  // Never send an unauthenticated request — it would 401 and trip the logout
-  // handler. Fail locally instead; a request-interceptor rejection short-circuits
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  }
+  // No token: let public/auth endpoints through (login has no token yet).
+  // Reject only PROTECTED requests so they don't fire header-less, 401, and
+  // trip the logout handler. A request-interceptor rejection short-circuits
   // and never reaches the response 401 handler.
-  if (!token) return Promise.reject(new Error('No auth token'));
-  config.headers.Authorization = `Bearer ${token}`;
-  return config;
+  if (isPublicPath(config.url)) return config;
+  return Promise.reject(new Error('No auth token'));
 });
 
 let loggingOut = false;
