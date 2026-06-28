@@ -20,8 +20,8 @@ export class DashboardService {
     return this.cache.getKpis(companyName, isAdmin, dateFrom, dateTo);
   }
 
-  getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-    this.validateDates(dateFrom, dateTo);
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+    this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
     return this.cache.getTimeSeries(companyName, isAdmin, dateFrom, dateTo);
   }
 
@@ -54,8 +54,8 @@ export class DashboardService {
   return this.cache.getGeo(companyName, isAdmin);
 }
 
-  getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-    this.validateDates(dateFrom, dateTo);
+  async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+    this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
     return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo);
   }
 

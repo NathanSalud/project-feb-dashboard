@@ -8,6 +8,19 @@ export class CacheService implements OnModuleInit {
   private cache: Map<string, any> = new Map();
   private lastRefreshed: Date | null = null;
 
+  // ── Lazy per-tenant caching for timeseries/discounts ──────────────
+  // These two datasets are NO LONGER preloaded for all tenants (that was the
+  // OOM source). They are fetched per-tenant on demand and cached with bounds.
+  private readonly TENANT_CACHE_MODE = process.env.TENANT_CACHE ?? 'lazy'; // 'lazy' | 'ondemand'
+  private readonly MAX_TENANTS = Number(process.env.TENANT_CACHE_MAX ?? 20); // per dataset (count bound)
+  private readonly TTL_MS = Number(process.env.TENANT_CACHE_TTL_MS ?? 3 * 60 * 60 * 1000); // 3h (time bound)
+
+  private timeseriesByCompany = new Map<string, { data: any[]; expiresAt: number }>();
+  private discountsByCompany = new Map<string, { data: any[]; expiresAt: number }>();
+  private timeseriesInflight = new Map<string, Promise<any[]>>();
+  private discountsInflight = new Map<string, Promise<any[]>>();
+  private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
+
   constructor(private snowflake: SnowflakeService) {}
 
   async onModuleInit() {
@@ -18,19 +31,20 @@ export class CacheService implements OnModuleInit {
     cron.schedule('0 16 * * *', async () => {
       this.logger.log('Running scheduled midnight PHT cache refresh...');
       await this.refreshAll();
+      this.clearLazyCaches(); // drop per-tenant slices so they reload fresh
     });
   }
 
   private async refreshAll() {
     try {
+      // NOTE: timeseries & discounts are intentionally NOT preloaded here —
+      // they are fetched per-tenant on demand (see getTimeSeries/getDiscounts).
       await Promise.all([
         this.refreshKpis(),
-        this.refreshTimeSeries(),
         this.refreshShops(),
         this.refreshProducts(),
         this.refreshAccounts(),
         this.refreshGeo(),
-        this.refreshDiscounts(),
         this.refreshDoi(),
       ]);
       this.lastRefreshed = new Date();
@@ -65,8 +79,11 @@ export class CacheService implements OnModuleInit {
     this.logger.log(`KPIs cached — ${data.length} rows`);
   }
 
-  private async refreshTimeSeries() {
-    const data = await this.snowflake.query(`
+  // Pure Snowflake fetchers for time series — no caching here (policy lives in
+  // loadWithCache / the getter). SQL copied verbatim from the old
+  // refreshTimeSeries; tenant variant adds ONLY `AND a.COMPANY_NAME = ?`.
+  private fetchAllTimeSeries(): Promise<any[]> {
+    return this.snowflake.query(`
       SELECT
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
@@ -83,8 +100,27 @@ export class CacheService implements OnModuleInit {
       GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `);
-    this.cache.set('timeseries', data);
-    this.logger.log(`Time series cached — ${data.length} rows`);
+  }
+
+  private fetchTenantTimeSeries(companyName: string): Promise<any[]> {
+    return this.snowflake.query(`
+      SELECT
+        a.COMPANY_NAME,
+        a.ACCOUNT_NAME,
+        a.PLATFORM,
+        DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
+        COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
+        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
+      FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
+      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      AND f.ORDER_DATE >= '2023-01-01'
+      AND a.IS_ACTIVE = TRUE
+      AND a.ACCOUNT_NAME != 's'
+      AND a.COMPANY_NAME = ?
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+    `, [companyName]);
   }
 
   private async refreshShops() {
@@ -196,8 +232,11 @@ private async refreshGeo() {
   this.logger.log(`Geo cached — ${result.length} rows`);
 }
 
-private async refreshDiscounts() {
-  const data = await this.snowflake.query(`
+// Pure Snowflake fetchers for discounts — no caching here (policy lives in
+// loadWithCache / the getter). SQL copied verbatim from the old
+// refreshDiscounts; tenant variant adds ONLY `AND a.COMPANY_NAME = ?`.
+private fetchAllDiscounts(): Promise<any[]> {
+  return this.snowflake.query(`
     SELECT
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
@@ -216,8 +255,29 @@ private async refreshDiscounts() {
     GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
     ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
   `);
-  this.cache.set('discounts', data);
-  this.logger.log(`Discounts cached — ${data.length} rows`);
+}
+
+private fetchTenantDiscounts(companyName: string): Promise<any[]> {
+  return this.snowflake.query(`
+    SELECT
+      a.COMPANY_NAME,
+      a.ACCOUNT_NAME,
+      a.PLATFORM,
+      DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
+      ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
+      ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
+      ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2)  AS SHIPPING_DISCOUNT,
+      ROUND(SUM(f.SELLER_SHIPPING_FEE_DISCOUNT), 2)    AS SELLER_SHIPPING_DISCOUNT
+    FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
+    INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
+    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    AND f.ORDER_DATE >= '2023-01-01'
+    AND a.IS_ACTIVE = TRUE
+    AND a.ACCOUNT_NAME != 's'
+    AND a.COMPANY_NAME = ?
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+  `, [companyName]);
 }
 
   private async refreshAccounts() {
@@ -277,6 +337,65 @@ private async refreshDiscounts() {
     this.logger.log(`DOI cached — ${data.length} rows`);
   }
 
+  // ── Lazy-cache plumbing (timeseries/discounts) ───────────────────
+
+  // THE single caching seam. Switch to pure on-demand with TENANT_CACHE=ondemand
+  // (early return below) — no code change. Bounded by TTL (time) and MAX_TENANTS (count).
+  private async loadWithCache(
+    store: Map<string, { data: any[]; expiresAt: number }>,
+    inflight: Map<string, Promise<any[]>>,
+    key: string,
+    fetchFn: (k: string) => Promise<any[]>,
+    label: string,
+  ): Promise<any[]> {
+    if (this.TENANT_CACHE_MODE === 'ondemand') return fetchFn(key);
+
+    const entry = store.get(key);
+    if (entry && Date.now() <= entry.expiresAt) {
+      store.delete(key);
+      store.set(key, entry); // promote to most-recently-used
+      const ageMin = Math.round((this.TTL_MS - (entry.expiresAt - Date.now())) / 60000);
+      this.logger.log(`[${label}] cache HIT company="${key}" age=${ageMin}m size=${store.size}/${this.MAX_TENANTS}`);
+      return entry.data;
+    }
+    if (entry) store.delete(key); // expired
+
+    const existing = inflight.get(key);
+    if (existing) return existing; // de-dupe concurrent misses
+
+    this.logger.log(`[${label}] cache MISS company="${key}" -> Snowflake`);
+    const p = fetchFn(key)
+      .then(data => {
+        store.delete(key);
+        store.set(key, { data, expiresAt: Date.now() + this.TTL_MS }); // re-insert at MRU end
+        while (store.size > this.MAX_TENANTS) {
+          const oldest = store.keys().next().value as string; // oldest = first key
+          store.delete(oldest);
+          this.logger.log(`[${label}] cache EVICT company="${oldest}" (LRU, size>${this.MAX_TENANTS})`);
+        }
+        return data;
+      })
+      .finally(() => inflight.delete(key)); // always clear, even on failure
+    inflight.set(key, p); // register BEFORE returning so concurrent callers see it
+    return p;
+  }
+
+  // Serializes heavy admin (all-tenant) loads so two can't spike memory at once.
+  private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.adminMutex.then(fn, fn);
+    this.adminMutex = run.catch(() => {}); // chain continues even if one load fails
+    return run;
+  }
+
+  // Drop all per-tenant slices (called by the nightly cron so data refreshes).
+  private clearLazyCaches() {
+    this.timeseriesByCompany.clear();
+    this.discountsByCompany.clear();
+    this.timeseriesInflight.clear();
+    this.discountsInflight.clear();
+    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts)');
+  }
+
   // ── PUBLIC GETTERS ──────────────────────────────────────────────
 
  getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
@@ -284,8 +403,13 @@ private async refreshDiscounts() {
     return this.filterCompany(data, companyName, isAdmin);
   }
 
-  getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-  const data = (this.cache.get('timeseries') || []) as any[];
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  const data = isAdmin
+    ? await this.runExclusive(() => this.fetchAllTimeSeries()) // all tenants, serialized, uncached
+    : await this.loadWithCache(
+        this.timeseriesByCompany, this.timeseriesInflight,
+        companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
+      );
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
 
@@ -308,8 +432,13 @@ private async refreshDiscounts() {
   return this.filterCompany(data, companyName, isAdmin);
 }
 
-getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-  const data = (this.cache.get('discounts') || []) as any[];
+async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  const data = isAdmin
+    ? await this.runExclusive(() => this.fetchAllDiscounts()) // all tenants, serialized, uncached
+    : await this.loadWithCache(
+        this.discountsByCompany, this.discountsInflight,
+        companyName, c => this.fetchTenantDiscounts(c), 'discounts',
+      );
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
 
@@ -326,6 +455,10 @@ getDoi(customerIds: string[], isAdmin: boolean) {
       counts: Object.fromEntries(
         Array.from(this.cache.entries()).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
       ),
+      lazy: {
+        timeseries: this.timeseriesByCompany.size,
+        discounts: this.discountsByCompany.size,
+      },
     };
   }
 
