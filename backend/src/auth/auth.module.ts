@@ -12,7 +12,7 @@ import { KnexModule } from '../database/knex.module';
       imports: [ConfigModule],
       useFactory: async (config: ConfigService) => ({
         secret:      config.get('JWT_SECRET') as string,
-        signOptions: { expiresIn: config.get('JWT_EXPIRES_IN') as string },
+        signOptions: { expiresIn: Number(config.get('JWT_EXPIRES_IN')) },
       }),
       inject: [ConfigService],
     }),
