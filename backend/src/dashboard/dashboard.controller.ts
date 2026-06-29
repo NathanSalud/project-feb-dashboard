@@ -86,7 +86,7 @@ export class DashboardController {
   @Get('doi')
   getDoi(@Request() req) {
     return this.dashboardService.getDoi(
-      req.user.customerIds || [],
+      req.user.companyName,
       req.user.isAdmin,
     );
   }

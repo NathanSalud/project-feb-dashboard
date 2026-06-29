@@ -59,8 +59,8 @@ export class DashboardService {
     return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo);
   }
 
-  getDoi(customerIds: string[], isAdmin: boolean) {
-    return this.cache.getDoi(customerIds, isAdmin);
+  getDoi(companyName: string, isAdmin: boolean) {
+    return this.cache.getDoi(companyName, isAdmin);
   }
   
   getStatus() {

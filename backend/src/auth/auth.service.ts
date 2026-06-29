@@ -15,6 +15,12 @@ export interface User {
 
 export const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
 
+// TODO(dead-for-DOI): DOI is now isolated by COMPANY_NAME via the OP_CHN_MAP_V2
+// crosswalk (see cache.service.refreshDoi/getDoi), so this map and the `customerIds`
+// it feeds (JWT payload + users.customer_ids) are no longer consulted for DOI. Left
+// dormant intentionally to avoid a DB migration / forced re-login; safe to excise
+// (drop column, remove customerIds from AuthPayload, delete this map + seed/memory
+// references) in a follow-up.
 export const CUSTOMER_ID_MAP: Record<string, string[]> = {
   'GDEC Admin': [],
   'Alaska Milk Corporation': ['ALASKA'],

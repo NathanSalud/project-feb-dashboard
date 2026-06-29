@@ -341,8 +341,46 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
         AND i.PRODUCT_SKU = o.PRODUCT_SKU
       ORDER BY i.CUSTOMER_ID, DOI ASC NULLS LAST
     `);
+
+    // Tag each DOI row with its owning company/accounts via the OP_CHN_MAP_V2
+    // crosswalk (SC_ID = marketplace SHOP_ID, CUST_ID = WMS CUSTOMER_ID). This
+    // replaces the broken per-user CUSTOMER_ID_MAP: DOI is now isolated by
+    // COMPANY_NAME like every other dataset. A CUST_ID shared across >1 company
+    // (or unresolved) gets COMPANY_NAME = null so tenants can't see it; admins
+    // bypass the filter in getDoi and still see everything.
+    const crosswalk = await this.snowflake.query(`
+      SELECT DISTINCT m.CUST_ID, a.COMPANY_NAME, a.ACCOUNT_NAME
+      FROM GDEC_ANALYTICS.SANDBOX.OP_CHN_MAP_V2 m
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a
+        ON a.SHOP_ID::string = m.SC_ID::string
+      WHERE m.SC_ID != '' AND m.CUST_ID != '' AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+    `);
+
+    const custMap = new Map<string, { companies: Set<string>; accounts: Set<string> }>();
+    for (const row of crosswalk as any[]) {
+      let entry = custMap.get(row.CUST_ID);
+      if (!entry) {
+        entry = { companies: new Set(), accounts: new Set() };
+        custMap.set(row.CUST_ID, entry);
+      }
+      entry.companies.add(row.COMPANY_NAME);
+      entry.accounts.add(row.ACCOUNT_NAME);
+    }
+
+    for (const r of data as any[]) {
+      const entry = custMap.get(r.CUSTOMER_ID);
+      if (entry && entry.companies.size === 1) {
+        r.COMPANY_NAME = [...entry.companies][0];
+        r.ACCOUNT_NAMES = [...entry.accounts];
+      } else {
+        r.COMPANY_NAME = null; // shared across companies or unresolved → tenant-restricted
+        r.ACCOUNT_NAMES = [];
+      }
+    }
+
     this.cache.set('doi', data);
-    this.logger.log(`DOI cached — ${data.length} rows`);
+    const visible = (data as any[]).filter(r => r.COMPANY_NAME).length;
+    this.logger.log(`DOI cached — ${data.length} rows (${visible} tenant-visible, ${custMap.size} CUST_IDs mapped)`);
   }
 
   // ── Lazy-cache plumbing (timeseries/discounts) ───────────────────
@@ -450,10 +488,12 @@ async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dat
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
 
-getDoi(customerIds: string[], isAdmin: boolean) {
+getDoi(companyName: string, isAdmin: boolean) {
     const data = (this.cache.get('doi') || []) as any[];
     if (isAdmin) return data;
-    return data.filter(r => customerIds.includes(r.CUSTOMER_ID));
+    // Standard tenant isolation by COMPANY_NAME (rows tagged in refreshDoi via the
+    // OP_CHN_MAP_V2 crosswalk). Shared/unresolved CUST_IDs have COMPANY_NAME = null.
+    return data.filter(r => r.COMPANY_NAME === companyName);
   }
 
   getStatus() {
