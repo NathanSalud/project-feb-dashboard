@@ -152,21 +152,22 @@ export default function Dashboard() {
   };
 
   const chartData = (() => {
-    const map: Record<string, {revenue:number;orders:number}> = {};
+    const map: Record<string, {revenue:number;orders:number;items:number}> = {};
     timeSeries.forEach((r: any) => {
       if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE||r.ORDER_MONTH).slice(0,10);
       const key = groupKey(raw);
-      if(!map[key]) map[key] = {revenue:0,orders:0};
+      if(!map[key]) map[key] = {revenue:0,orders:0,items:0};
       map[key].revenue += Number(r.REVENUE);
       map[key].orders  += Number(r.ORDERS);
+      map[key].items   += Number(r.ITEMS);
     });
     return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>({
       month: granularity === 'month' ? new Date(k+'-01').toLocaleDateString('en-US',{month:'short',year:'2-digit'})
            : granularity === 'year'  ? k
            : granularity === 'quarter' ? k
            : new Date(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
-      revenue: d.revenue, orders: d.orders,
+      revenue: d.revenue, orders: d.orders, items: d.items,
       aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
     }));
   })();
@@ -383,12 +384,13 @@ export default function Dashboard() {
               title={g !== 'month' ? 'Available in next phase' : ''}>{g}</button>
           ))}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {[
-            { title: 'Revenue by Month', key: 'revenue', color: TEAL, type: 'line', fmt: fmt },
-            { title: 'Orders by Month',  key: 'orders',  color: '#22c98a', type: 'bar', fmt: fmtN },
-            { title: 'AOV by Month',     key: 'aov',     color: GOLD, type: 'line', fmt: fmt },
-          ].map(({ title, key, color, type, fmt: f }) => (
+            { title: 'Revenue by Month',    key: 'revenue', color: TEAL,      type: 'line', fmt: fmt,  suffix: '' },
+            { title: 'Orders by Month',     key: 'orders',  color: '#22c98a', type: 'bar',  fmt: fmtN, suffix: ' orders' },
+            { title: 'AOV by Month',        key: 'aov',     color: GOLD,      type: 'line', fmt: fmt,  suffix: '' },
+            { title: 'Items Sold by Month', key: 'items',   color: BLUE2,     type: 'bar',  fmt: fmtN, suffix: ' items' },
+          ].map(({ title, key, color, type, fmt: f, suffix }) => (
             <div key={key} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>{title}</div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Filtered period</div>
@@ -406,7 +408,7 @@ export default function Dashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                     <XAxis dataKey="month" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                     <YAxis tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => f(v)} width={45} />
-                    <Tooltip contentStyle={ttStyle} formatter={(v: any) => f(Number(v)) + ' orders'} />
+                    <Tooltip contentStyle={ttStyle} formatter={(v: any) => f(Number(v)) + suffix} />
                     <Bar dataKey={key} fill={color} radius={[3,3,0,0]} opacity={0.8} />
                   </BarChart>
                 )}
