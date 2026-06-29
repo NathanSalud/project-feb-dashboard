@@ -118,24 +118,19 @@ export default function Dashboard() {
     .reduce((acc: any, r: any) => ({
       revenue: (acc.revenue || 0) + Number(r.REVENUE),
       orders:  (acc.orders  || 0) + Number(r.ORDERS),
+      items:   (acc.items   || 0) + Number(r.ITEMS),
+      pd:      (acc.pd      || 0) + Number(r.PLATFORM_DISCOUNT),
+      sd:      (acc.sd      || 0) + Number(r.SELLER_DISCOUNT),
+      ship:    (acc.ship    || 0) + Number(r.SHIPPING_DISCOUNT),
     }), {});
 
-  const kpiBase = filteredKpis.reduce((acc: any, k: any) => ({
-    revenue: (acc.revenue || 0) + Number(k.REVENUE),
-    pd:      (acc.pd      || 0) + Number(k.PLATFORM_DISCOUNT),
-    sd:      (acc.sd      || 0) + Number(k.SELLER_DISCOUNT),
-    ship:    (acc.ship    || 0) + Number(k.SHIPPING_DISCOUNT),
-    items:   (acc.items   || 0) + Number(k.ITEMS),
-  }), {});
-
-  const discRatio = kpiBase.revenue > 0 ? (tsRevOrd.revenue || 0) / kpiBase.revenue : 1;
   const totals = {
     revenue: tsRevOrd.revenue || 0,
     orders:  tsRevOrd.orders  || 0,
-    items:   Math.round((kpiBase.items || 0) * discRatio),
-    pd:      (kpiBase.pd   || 0) * discRatio,
-    sd:      (kpiBase.sd   || 0) * discRatio,
-    ship:    (kpiBase.ship || 0) * discRatio,
+    items:   tsRevOrd.items || 0,
+    pd:      tsRevOrd.pd    || 0,
+    sd:      tsRevOrd.sd    || 0,
+    ship:    tsRevOrd.ship  || 0,
   };
   const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;
   const discRate = totals.revenue > 0 ? (((totals.pd + totals.sd) / totals.revenue) * 100).toFixed(1) : '0.0';
@@ -370,7 +365,7 @@ export default function Dashboard() {
           {kpiCard('Total Revenue',   fmt(totals.revenue), 'ORIGINAL_PRODUCT_PRICE · filtered period', TEAL)}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'Revenue ÷ orders',                         BLUE2)}
-          {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items · estimated',             '#22c98a')}
+          {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
         </div>
 
