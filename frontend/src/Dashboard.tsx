@@ -25,6 +25,11 @@ const PLAT_COLORS: Record<string, string> = {
 const PIE_COLORS = [TEAL, GOLD, BLUE2, '#22c98a', '#9b6ff0', '#e85555'];
 
 export default function Dashboard() {
+  // Hidden for now — insights analyze all 2023–2026 data regardless of the user's date
+  // filter, so they read as too broad. Re-enable once /insights/generate respects the
+  // active date range.
+  const SHOW_AI_INSIGHTS = false;
+
   const { user, logout } = useAuth();
   const [cAcc, setCAcc]           = useState('all');
   const [cPlat, setCPlat]         = useState('all');
@@ -234,6 +239,7 @@ export default function Dashboard() {
   };
 
   const generateInsights = async () => {
+  if (!SHOW_AI_INSIGHTS) return;   // parked: no network call while hidden
   setInsightLoading(true);
   setInsights('');
   const summary = {
@@ -287,15 +293,15 @@ export default function Dashboard() {
     </div>
   );
 
-  const sectionLabel = (text: string) => (
-    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.6px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 12, marginTop: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>{text}</div>
+  const sectionLabel = (text: string, id?: string) => (
+    <div id={id} style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.6px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 12, marginTop: 8, paddingBottom: 8, borderBottom: `1px solid ${BORDER}`, scrollMarginTop: 80 }}>{text}</div>
   );
 
   return (
     <div style={{ minHeight: '100vh', background: LIGHT, color: TEXT1, fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 14 }}>
 
       {/* TOPBAR */}
-      <header style={{ background: WHITE, borderBottom: `1px solid ${BORDER}`, padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 60, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', flexWrap: 'wrap' as const, gap: 8 }}>
+      <header style={{ position: 'sticky' as const, top: 0, zIndex: 30, background: WHITE, borderBottom: `1px solid ${BORDER}`, padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 60, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', flexWrap: 'wrap' as const, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <img src={gdecLogo} alt="GDEC" style={{ height: 36, objectFit: 'contain' }} />
           <div style={{ width: 1, height: 28, background: BORDER }} />
@@ -330,10 +336,35 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div style={{ padding: '20px 24px' }}>
+      <div style={{ display: 'flex', gap: 20, padding: '20px 24px', alignItems: 'flex-start' }}>
+
+        {/* QUICK-NAV SIDEBAR */}
+        <aside style={{ position: 'sticky' as const, top: 80, alignSelf: 'flex-start', width: 190, flexShrink: 0 }}>
+          <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.6px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 10, padding: '0 4px' }}>Navigate</div>
+            {[
+              { id: 'performance-overview', label: 'Performance Overview' },
+              { id: 'trends',               label: 'Trends' },
+              { id: 'data-tables',          label: 'Data Tables' },
+              { id: 'geographic-platform',  label: 'Geographic & Platform' },
+              { id: 'discount-analysis',    label: 'Discount Analysis' },
+            ].map(s => (
+              <button key={s.id}
+                onClick={() => document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '8px 10px', marginBottom: 4, borderRadius: 8, border: '1px solid transparent', background: 'transparent', color: TEXT2, fontFamily: 'inherit', fontSize: 12, cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(26,122,138,0.08)'; e.currentTarget.style.color = TEAL; e.currentTarget.style.border = `1px solid ${BORDER}`; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT2; e.currentTarget.style.border = '1px solid transparent'; }}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* MAIN CONTENT */}
+        <main style={{ flex: 1, minWidth: 0 }}>
 
         {/* KPI CARDS */}
-        {sectionLabel('Performance Overview')}
+        {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {kpiCard('Total Revenue',   fmt(totals.revenue), 'ORIGINAL_PRODUCT_PRICE · filtered period', TEAL)}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
@@ -343,7 +374,7 @@ export default function Dashboard() {
         </div>
 
         {/* TIME SERIES CHARTS */}
-        {sectionLabel('Trends')}
+        {sectionLabel('Trends', 'trends')}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
           <span style={{ fontSize: 10, color: TEXT3, letterSpacing: '.4px', textTransform: 'uppercase' as const, marginRight: 4 }}>Granularity</span>
           {(['day','week','month','quarter','year'] as const).map(g => (
@@ -385,7 +416,7 @@ export default function Dashboard() {
         </div>
 
         {/* TABS + TABLES */}
-        {sectionLabel('Data Tables')}
+        {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
           {(['breakdown','shops','products', ...(user?.isAdmin || (user?.customerIds && user.customerIds.length > 0) ? ['doi'] as const : [])] as const).map(t => (
             <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
@@ -521,7 +552,7 @@ export default function Dashboard() {
         </div>
 
         {/* SALES BY PLATFORM + PROVINCE */}
-        {sectionLabel('Geographic & Platform Distribution')}
+        {sectionLabel('Geographic & Platform Distribution', 'geographic-platform')}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)', gap: 12, marginBottom: 20 }}>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Platform</div>
@@ -552,7 +583,7 @@ export default function Dashboard() {
         </div>
 
         {/* DISCOUNT SECTION */}
-        {sectionLabel('Discount Analysis')}
+        {sectionLabel('Discount Analysis', 'discount-analysis')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 16 }}>
           {[
             { label: 'Platform Discount', value: fmt(totals.pd),         sub: `${totals.revenue>0?((totals.pd/totals.revenue)*100).toFixed(1):0}% of revenue`, color: TEAL },
@@ -600,6 +631,8 @@ export default function Dashboard() {
         </div>
 
         {/* AI INSIGHTS */}
+        {SHOW_AI_INSIGHTS && (
+        <>
         {sectionLabel('AI-Generated Insights')}
         <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: insights ? 16 : 0 }}>
@@ -623,10 +656,13 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+        </>
+        )}
 
         <div style={{ fontSize: 10, color: TEXT3, textAlign: 'center' as const, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
           Source: GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS · Active accounts · Revenue: ORIGINAL_PRODUCT_PRICE · Geographic data: all time 2023 onwards
         </div>
+        </main>
       </div>
     </div>
   );
