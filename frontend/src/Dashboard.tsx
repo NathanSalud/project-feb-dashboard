@@ -72,10 +72,15 @@ export default function Dashboard() {
   const { data: doiRaw = [] } = useQuery({
     queryKey: ['doi'],
     queryFn: () => getDoi().then(r => r.data),
-    enabled: !!user?.isAdmin || (!!user?.customerIds && user.customerIds.length > 0),
+    enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
   });
   const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
-  const doiFiltered = doiCustomer === 'all' ? doiRaw : (doiRaw as any[]).filter(r => r.CUSTOMER_ID === doiCustomer);
+  // Rows are tagged server-side with COMPANY_NAME/ACCOUNT_NAMES. Tenants filter by the
+  // global account selector (cAcc); admins keep the raw CUST_ID dropdown.
+  const doiFiltered = (doiRaw as any[]).filter(r =>
+    (user?.isAdmin ? (doiCustomer === 'all' || r.CUSTOMER_ID === doiCustomer) : true) &&
+    (cAcc === 'all' || (r.ACCOUNT_NAMES || []).includes(cAcc))
+  );
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
 
@@ -315,7 +320,9 @@ export default function Dashboard() {
             </select>
           )}
           {!user?.isAdmin && (
-            <select onChange={e => setCPlat(e.target.value)} value={cPlat} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
+            <select onChange={e => setCPlat(e.target.value)} value={cPlat} disabled={activeTab === 'doi'}
+              title={activeTab === 'doi' ? 'Platform does not apply to inventory (DOI)' : ''}
+              style={{ background: WHITE, border: `1px solid ${BORDER}`, color: activeTab === 'doi' ? TEXT3 : TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: activeTab === 'doi' ? 'not-allowed' : 'pointer' }}>
               <option value="all">All Platforms</option>
               {platforms.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
@@ -415,7 +422,7 @@ export default function Dashboard() {
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {(['breakdown','shops','products', ...(user?.isAdmin || (user?.customerIds && user.customerIds.length > 0) ? ['doi'] as const : [])] as const).map(t => (
+          {(['breakdown','shops','products','doi'] as const).map(t => (
             <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
               {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
@@ -429,11 +436,11 @@ export default function Dashboard() {
                 {activeTab === 'breakdown' ? 'Account & Platform Breakdown' : activeTab === 'shops' ? 'Shop Performance' : activeTab === 'products' ? 'Top Products' : 'Inventory & Days of Inventory'}
               </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginTop: 2 }}>
-                {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by revenue · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters'}
+                {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by revenue · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters · inventory is at warehouse-customer grain; accounts sharing a warehouse customer show combined inventory'}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {activeTab === 'doi' && (
+            {activeTab === 'doi' && user?.isAdmin && (
   <select value={doiCustomer} onChange={e => setDoiCustomer(e.target.value)}
     style={{ marginRight: 8, padding: '5px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: TEXT2, background: WHITE, cursor: 'pointer' }}>
     <option value="all">All customers</option>
