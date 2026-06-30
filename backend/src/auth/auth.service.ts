@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -14,6 +14,9 @@ export interface User {
 }
 
 export const HASH = '$2b$10$v6UedieFxmA683CBBuDz4.1TUmby3i25ZJ6roqPI90tAzUbbunx1W';
+
+// Match the cost factor baked into HASH ($2b$10$…); no SALT_ROUNDS env today.
+const SALT_ROUNDS = 10;
 
 // TODO(dead-for-DOI): DOI is now isolated by COMPANY_NAME via the OP_CHN_MAP_V2
 // crosswalk (see cache.service.refreshDoi/getDoi), so this map and the `customerIds`
@@ -616,6 +619,35 @@ export class AuthService {
       isAdmin:      row.is_admin,
       customerIds:  row.customer_ids || [],
     };
+  }
+
+  async changePassword(
+    username: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const row = await this.knexService
+      .knex('users')
+      .where({ username: username.toLowerCase() })
+      .first();
+    if (!row) throw new UnauthorizedException('Invalid credentials');
+
+    const valid = await bcrypt.compare(currentPassword, row.password_hash);
+    if (!valid) throw new UnauthorizedException('Current password is incorrect');
+
+    if (!newPassword || newPassword.length < 8) {
+      throw new BadRequestException(
+        'New password must be at least 8 characters',
+      );
+    }
+
+    const newHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await this.knexService
+      .knex('users')
+      .where({ username: row.username })
+      .update({ password_hash: newHash, updated_at: this.knexService.knex.fn.now() });
+
+    return { success: true };
   }
 
   private async loginFromMemory(
