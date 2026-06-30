@@ -63,17 +63,17 @@ export const login = (username: string, password: string) =>
 export const changePassword = (currentPassword: string, newPassword: string) =>
   api.post('/auth/change-password', { currentPassword, newPassword });
 
-export const getKpis = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/kpis', { params: { dateFrom, dateTo } });
+export const getKpis = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/kpis', { params: { dateFrom, dateTo, brand } });
 
-export const getTimeSeries = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo } });
+export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo, brand } });
 
-export const getShops = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/shops', { params: { dateFrom, dateTo } });
+export const getShops = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/shops', { params: { dateFrom, dateTo, brand } });
 
-export const getProducts = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/products', { params: { dateFrom, dateTo } });
+export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/products', { params: { dateFrom, dateTo, brand } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
@@ -81,8 +81,8 @@ export const getAccounts = () =>
 export const getGeo = (dateFrom?: string, dateTo?: string) =>
   api.get('/dashboard/geo', { params: { dateFrom, dateTo } });
 
-export const getDiscounts = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/discounts', { params: { dateFrom, dateTo } });
+export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand } });
 
 export const getDoi = () =>
   api.get('/dashboard/doi');

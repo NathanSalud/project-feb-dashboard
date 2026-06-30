@@ -25,15 +25,22 @@ const PLAT_COLORS: Record<string, string> = {
 };
 const PIE_COLORS = [TEAL, GOLD, BLUE2, '#22c98a', '#9b6ff0', '#e85555'];
 
+// TODO: replace with real brand list from backend
+const STUB_BRANDS = ['Placeholder Brand A', 'Placeholder Brand B', 'Placeholder Brand C'];
+
 export default function Dashboard() {
   // Hidden for now — insights analyze all 2023–2026 data regardless of the user's date
   // filter, so they read as too broad. Re-enable once /insights/generate respects the
   // active date range.
   const SHOW_AI_INSIGHTS = false;
+  // UI shell only. No backend brand data yet; the Brand <select> and its `brand`
+  // API param are forward-wired and inert until this is flipped on.
+  const SHOW_BRAND_FILTER = false;
 
   const { user, logout } = useAuth();
   const [cAcc, setCAcc]           = useState('all');
   const [cPlat, setCPlat]         = useState('all');
+  const [cBrand, setCBrand]       = useState('all');
   const [dateFrom, setDateFrom]   = useState('2023-01-01');
   const [dateTo, setDateTo]       = useState('2026-05-31');
   const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
@@ -46,21 +53,21 @@ export default function Dashboard() {
   const [showChangePw, setShowChangePw] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
-    queryKey: ['kpis', dateFrom, dateTo],
-    queryFn: () => getKpis(dateFrom, dateTo).then(r => r.data),
+    queryKey: ['kpis', dateFrom, dateTo, cBrand],
+    queryFn: () => getKpis(dateFrom, dateTo, cBrand).then(r => r.data),
   });
   const { data: timeSeries = [], isFetching: tFetch } = useQuery({
-    queryKey: ['timeseries', dateFrom, dateTo],
-    queryFn: () => getTimeSeries(dateFrom, dateTo).then(r => r.data),
+    queryKey: ['timeseries', dateFrom, dateTo, cBrand],
+    queryFn: () => getTimeSeries(dateFrom, dateTo, cBrand).then(r => r.data),
   });
   const { data: shopsRes, isFetching: sFetch } = useQuery({
-    queryKey: ['shops', dateFrom, dateTo],
-    queryFn: () => getShops(dateFrom, dateTo).then(r => r.data),
+    queryKey: ['shops', dateFrom, dateTo, cBrand],
+    queryFn: () => getShops(dateFrom, dateTo, cBrand).then(r => r.data),
   });
   const shops = shopsRes?.data ?? [];
   const { data: productsRes, isFetching: pFetch } = useQuery({
-    queryKey: ['products', dateFrom, dateTo],
-    queryFn: () => getProducts(dateFrom, dateTo).then(r => r.data),
+    queryKey: ['products', dateFrom, dateTo, cBrand],
+    queryFn: () => getProducts(dateFrom, dateTo, cBrand).then(r => r.data),
   });
   const products = productsRes?.data ?? [];
   const { data: geoRaw = [] } = useQuery({
@@ -68,8 +75,8 @@ export default function Dashboard() {
     queryFn: () => getGeo().then(r => r.data),
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
-    queryKey: ['discounts', dateFrom, dateTo],
-    queryFn: () => getDiscounts(dateFrom, dateTo).then(r => r.data),
+    queryKey: ['discounts', dateFrom, dateTo, cBrand],
+    queryFn: () => getDiscounts(dateFrom, dateTo, cBrand).then(r => r.data),
   });
   const { data: doiRaw = [] } = useQuery({
     queryKey: ['doi'],
@@ -327,6 +334,12 @@ export default function Dashboard() {
               style={{ background: WHITE, border: `1px solid ${BORDER}`, color: activeTab === 'doi' ? TEXT3 : TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: activeTab === 'doi' ? 'not-allowed' : 'pointer' }}>
               <option value="all">All Platforms</option>
               {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          )}
+          {SHOW_BRAND_FILTER && (
+            <select onChange={e => setCBrand(e.target.value)} value={cBrand} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
+              <option value="all">All Brands</option>
+              {STUB_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '4px 10px' }}>
