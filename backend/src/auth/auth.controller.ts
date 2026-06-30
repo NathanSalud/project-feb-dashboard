@@ -1,5 +1,6 @@
 import {
   Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Request,
+  ForbiddenException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { JwtGuard } from './jwt/jwt.guard';
@@ -26,5 +27,14 @@ export class AuthController {
       body.currentPassword,
       body.newPassword,
     );
+  }
+
+  @Post('admin/reset-password')
+  @UseGuards(JwtGuard)
+  @HttpCode(HttpStatus.OK)
+  adminResetPassword(@Request() req, @Body() body: { username: string }) {
+    // Real access gate: block non-admins entirely before any work.
+    if (!req.user.isAdmin) throw new ForbiddenException();
+    return this.authService.adminResetPassword(req.user.username, body.username);
   }
 }

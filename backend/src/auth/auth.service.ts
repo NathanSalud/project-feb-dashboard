@@ -1,7 +1,11 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable, UnauthorizedException, BadRequestException,
+  NotFoundException, Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { KnexService } from '../database/knex.service';
 
 export interface User {
@@ -578,6 +582,7 @@ export interface AuthPayload {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   constructor(
     private jwt: JwtService,
     private config: ConfigService,
@@ -648,6 +653,30 @@ export class AuthService {
       .update({ password_hash: newHash, updated_at: this.knexService.knex.fn.now() });
 
     return { success: true };
+  }
+
+  async adminResetPassword(adminUsername: string, targetUsername: string) {
+    const row = await this.knexService
+      .knex('users')
+      .where({ username: targetUsername.toLowerCase() })
+      .first();
+    if (!row) throw new NotFoundException('User not found');
+
+    // URL-safe temp password; crypto.randomBytes (NOT Math.random). 9 bytes → 12 chars.
+    const temporaryPassword = randomBytes(9).toString('base64url');
+    const newHash = await bcrypt.hash(temporaryPassword, SALT_ROUNDS);
+
+    await this.knexService
+      .knex('users')
+      .where({ username: row.username })
+      .update({ password_hash: newHash, updated_at: this.knexService.knex.fn.now() });
+
+    // Log the event only — never the plaintext temp password.
+    this.logger.log(
+      `Admin '${adminUsername}' reset password for '${row.username}' at ${new Date().toISOString()}`,
+    );
+
+    return { success: true, username: row.username, temporaryPassword };
   }
 
   private async loginFromMemory(
