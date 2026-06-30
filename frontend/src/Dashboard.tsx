@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { useAuth } from './AuthContext';
 import { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
+import ChangePasswordModal from './ChangePasswordModal';
 import gdecLogo from './assets/gdec-logo.png';
 
 const TEAL   = '#1a7a8a';
@@ -42,6 +43,7 @@ export default function Dashboard() {
   const [insights, setInsights]   = useState<string>('');
   const [insightLoading, setInsightLoading] = useState(false);
   const [doiCustomer, setDoiCustomer] = useState('all');
+  const [showChangePw, setShowChangePw] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
     queryKey: ['kpis', dateFrom, dateTo],
@@ -360,6 +362,14 @@ export default function Dashboard() {
                 {s.label}
               </button>
             ))}
+            <div style={{ height: 1, background: BORDER, margin: '10px 4px' }} />
+            <button
+              onClick={() => setShowChangePw(true)}
+              style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '8px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, background: 'transparent', color: TEAL, fontFamily: 'inherit', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(26,122,138,0.08)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+              🔑 Change Password
+            </button>
           </div>
         </aside>
 
@@ -668,6 +678,9 @@ export default function Dashboard() {
         </div>
         </main>
       </div>
+      {showChangePw && (
+        <ChangePasswordModal onClose={() => setShowChangePw(false)} onSignOut={logout} />
+      )}
     </div>
   );
 }

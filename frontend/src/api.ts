@@ -58,6 +58,11 @@ api.interceptors.response.use(
 export const login = (username: string, password: string) =>
   api.post('/auth/login', { username, password });
 
+// Reuses the shared `api` instance, so the request interceptor attaches the
+// Bearer token automatically. Confirm field is client-side only — not sent.
+export const changePassword = (currentPassword: string, newPassword: string) =>
+  api.post('/auth/change-password', { currentPassword, newPassword });
+
 export const getKpis = (dateFrom?: string, dateTo?: string) =>
   api.get('/dashboard/kpis', { params: { dateFrom, dateTo } });
 
