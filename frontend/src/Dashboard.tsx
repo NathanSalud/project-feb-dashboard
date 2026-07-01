@@ -160,26 +160,49 @@ export default function Dashboard() {
     return dateStr.slice(0,7);
   };
 
+  type PerPlat = {revenue:number;orders:number;items:number};
   const chartData = (() => {
-    const map: Record<string, {revenue:number;orders:number;items:number}> = {};
+    const map: Record<string, {revenue:number;orders:number;items:number;plat:Record<string,PerPlat>}> = {};
     timeSeries.forEach((r: any) => {
       if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE||r.ORDER_MONTH).slice(0,10);
       const key = groupKey(raw);
-      if(!map[key]) map[key] = {revenue:0,orders:0,items:0};
-      map[key].revenue += Number(r.REVENUE);
-      map[key].orders  += Number(r.ORDERS);
-      map[key].items   += Number(r.ITEMS);
+      if(!map[key]) map[key] = {revenue:0,orders:0,items:0,plat:{}};
+      const m = map[key];
+      m.revenue += Number(r.REVENUE);
+      m.orders  += Number(r.ORDERS);
+      m.items   += Number(r.ITEMS);
+      const p = r.PLATFORM;
+      if(!m.plat[p]) m.plat[p] = {revenue:0,orders:0,items:0};
+      m.plat[p].revenue += Number(r.REVENUE);
+      m.plat[p].orders  += Number(r.ORDERS);
+      m.plat[p].items   += Number(r.ITEMS);
     });
-    return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>({
-      month: granularity === 'month' ? new Date(k+'-01').toLocaleDateString('en-US',{month:'short',year:'2-digit'})
-           : granularity === 'year'  ? k
-           : granularity === 'quarter' ? k
-           : new Date(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
-      revenue: d.revenue, orders: d.orders, items: d.items,
-      aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
-    }));
+    return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>{
+      const row: Record<string, any> = {
+        month: granularity === 'month' ? new Date(k+'-01').toLocaleDateString('en-US',{month:'short',year:'2-digit'})
+             : granularity === 'year'  ? k
+             : granularity === 'quarter' ? k
+             : new Date(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
+        revenue: d.revenue, orders: d.orders, items: d.items,
+        aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
+      };
+      for(const [p, pv] of Object.entries(d.plat)) {
+        row[`revenue__${p}`] = pv.revenue;
+        row[`orders__${p}`]  = pv.orders;
+        row[`items__${p}`]   = pv.items;
+        row[`aov__${p}`]     = pv.orders > 0 ? Math.round(pv.revenue/pv.orders) : 0;
+      }
+      return row;
+    });
   })();
+
+  // Split the trend charts by platform only in the "All Platforms" overview; a
+  // specific platform selection collapses back to a single series (drill-down).
+  const ORDERED_PLATS = ['Shopee', 'Tiktok', 'Lazada'];
+  const splitPlats = cPlat === 'all'
+    ? ORDERED_PLATS.filter(p => chartData.some((row: any) => row[`revenue__${p}`] != null))
+    : [];
 
   // Sales by platform pie
   const platPie = (() => {
@@ -415,7 +438,9 @@ export default function Dashboard() {
             { title: 'Orders by Month',     key: 'orders',  color: '#22c98a', type: 'bar',  fmt: fmtN, suffix: ' orders' },
             { title: 'AOV by Month',        key: 'aov',     color: GOLD,      type: 'line', fmt: fmt,  suffix: '' },
             { title: 'Items Sold by Month', key: 'items',   color: BLUE2,     type: 'bar',  fmt: fmtN, suffix: ' items' },
-          ].map(({ title, key, color, type, fmt: f, suffix }) => (
+          ].map(({ title, key, color, type, fmt: f, suffix }) => {
+            const split = splitPlats.length > 0;
+            return (
             <div key={key} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>{title}</div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Filtered period</div>
@@ -426,7 +451,9 @@ export default function Dashboard() {
                     <XAxis dataKey="month" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                     <YAxis tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => f(v)} width={55} />
                     <Tooltip contentStyle={ttStyle} formatter={(v: any) => f(Number(v))} />
-                    <Line type="monotone" dataKey={key} stroke={color} strokeWidth={2} dot={false} />
+                    {split
+                      ? splitPlats.map(p => <Line key={p} type="monotone" dataKey={`${key}__${p}`} name={p} stroke={PLAT_COLORS[p] || color} strokeWidth={2} dot={false} />)
+                      : <Line type="monotone" dataKey={key} stroke={PLAT_COLORS[cPlat] || color} strokeWidth={2} dot={false} />}
                   </LineChart>
                 ) : (
                   <BarChart data={chartData}>
@@ -434,12 +461,15 @@ export default function Dashboard() {
                     <XAxis dataKey="month" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                     <YAxis tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => f(v)} width={45} />
                     <Tooltip contentStyle={ttStyle} formatter={(v: any) => f(Number(v)) + suffix} />
-                    <Bar dataKey={key} fill={color} radius={[3,3,0,0]} opacity={0.8} />
+                    {split
+                      ? splitPlats.map((p, idx) => <Bar key={p} dataKey={`${key}__${p}`} name={p} stackId="a" fill={PLAT_COLORS[p] || color} opacity={0.85} radius={idx === splitPlats.length-1 ? [3,3,0,0] : undefined} />)
+                      : <Bar dataKey={key} fill={PLAT_COLORS[cPlat] || color} radius={[3,3,0,0]} opacity={0.8} />}
                   </BarChart>
                 )}
               </ResponsiveContainer>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* TABS + TABLES */}
