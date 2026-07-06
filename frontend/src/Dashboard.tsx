@@ -340,7 +340,7 @@ export default function Dashboard() {
           <div style={{ width: 1, height: 28, background: BORDER }} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: TEAL }}>Account Intelligence</div>
-            <div style={{ fontSize: 10, color: TEXT3 }}>{user?.isAdmin ? 'Admin View — All Companies' : user?.companyName}</div>
+            <div style={{ fontSize: 10, color: TEXT3 }}>{user?.isAdmin ? 'Admin View — All Companies' : (user?.displayName ?? user?.companyName)}</div>
           </div>
         </div>
 

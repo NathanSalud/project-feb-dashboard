@@ -12,6 +12,9 @@ export async function seed(knex: Knex): Promise<void> {
     username: record.user.username,
     password_hash: record.passwordHash,
     company_name: record.user.companyName,
+    // Cosmetic header label; only GSK sets one today, everyone else is null and the
+    // frontend falls back to company_name. NEVER a filter key.
+    display_name: record.user.displayName ?? null,
     account_names: record.user.accountNames,
     platforms: record.user.platforms,
     is_admin: record.user.isAdmin,

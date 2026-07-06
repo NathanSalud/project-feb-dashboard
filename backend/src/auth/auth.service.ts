@@ -11,6 +11,9 @@ import { KnexService } from '../database/knex.service';
 export interface User {
   username: string;
   companyName: string;
+  // Short brand name shown in the dashboard header. Display-only — NEVER used for
+  // tenant filtering (that keys off companyName). Falls back to companyName if unset.
+  displayName?: string;
   accountNames: string[];
   platforms: string[];
   isAdmin: boolean;
@@ -256,6 +259,7 @@ export const USERS: { username: string; passwordHash: string; user: User }[] = [
     user: {
       username: 'glaxosmithkline_consumer_healthcare_philippines_inc',
       companyName: 'Glaxosmithkline Consumer Healthcare Philippines Inc.',
+      displayName: 'Haleon Philippines Inc.',
       accountNames: ['Haleon'],
       platforms: ['Lazada', 'Shopee', 'Tiktok'],
       isAdmin: false,
@@ -574,6 +578,7 @@ export const USERS: { username: string; passwordHash: string; user: User }[] = [
 export interface AuthPayload {
   username: string;
   companyName: string;
+  displayName?: string;
   accountNames: string[];
   platforms: string[];
   isAdmin: boolean;
@@ -619,6 +624,7 @@ export class AuthService {
     return {
       username:     row.username,
       companyName:  row.company_name,
+      displayName:  row.display_name ?? undefined,
       accountNames: row.account_names || [],
       platforms:    row.platforms || [],
       isAdmin:      row.is_admin,
@@ -692,6 +698,7 @@ export class AuthService {
     return {
       username:     record.user.username,
       companyName:  record.user.companyName,
+      displayName:  record.user.displayName,
       accountNames: record.user.accountNames,
       platforms:    record.user.platforms,
       isAdmin:      record.user.isAdmin,

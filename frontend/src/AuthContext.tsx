@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 interface User {
   username: string;
   companyName: string;
+  displayName?: string;
   accountNames: string[];
   platforms: string[];
   isAdmin: boolean;
