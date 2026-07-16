@@ -2,6 +2,18 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { SnowflakeService } from '../snowflake/snowflake.service';
 import * as cron from 'node-cron';
 
+/**
+ * The single definition of "valid revenue" order-item statuses used by every
+ * FACT_PLATFORM_ORDER_ITEMS aggregation (KPIs, trends, shops, products, geo,
+ * discounts). Kept in one place so the 8 queries can never drift apart.
+ * NOTE: 'Ready to Ship' is intentionally included — this reflects the current
+ * agreed revenue definition. Changing this list changes reported revenue.
+ */
+const VALID_REVENUE_STATUSES = ['Completed', 'Shipped', 'Delivered', 'Ready to Ship'] as const;
+
+// Pre-rendered SQL fragment, e.g. "'Completed','Shipped','Delivered','Ready to Ship'"
+const VALID_REVENUE_STATUS_SQL = VALID_REVENUE_STATUSES.map(s => `'${s}'`).join(',');
+
 @Injectable()
 export class CacheService implements OnModuleInit {
   private readonly logger = new Logger(CacheService.name);
@@ -68,7 +80,7 @@ export class CacheService implements OnModuleInit {
         ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
       FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
@@ -97,7 +109,7 @@ export class CacheService implements OnModuleInit {
         ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
       FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
@@ -121,7 +133,7 @@ export class CacheService implements OnModuleInit {
         ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
       FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
@@ -145,7 +157,7 @@ export class CacheService implements OnModuleInit {
         ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE) / NULLIF(COUNT(DISTINCT f.PLATFORM_ORDER_ID), 0), 2) AS AOV
       FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
@@ -169,7 +181,7 @@ export class CacheService implements OnModuleInit {
         ROUND(AVG(f.ORIGINAL_PRODUCT_PRICE), 2) AS ASP
       FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-      WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
@@ -206,7 +218,7 @@ private async refreshGeo() {
       ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
     FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
     AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
@@ -256,7 +268,7 @@ private fetchAllDiscounts(): Promise<any[]> {
       ROUND(SUM(f.SELLER_SHIPPING_FEE_DISCOUNT), 2)    AS SELLER_SHIPPING_DISCOUNT
     FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
     AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
@@ -278,7 +290,7 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
       ROUND(SUM(f.SELLER_SHIPPING_FEE_DISCOUNT), 2)    AS SELLER_SHIPPING_DISCOUNT
     FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
-    WHERE f.ITEM_STATUS IN ('Completed','Shipped','Delivered','Ready to Ship')
+    WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
     AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
