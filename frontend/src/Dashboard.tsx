@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
 import ChangePasswordModal from './ChangePasswordModal';
 import gdecLogo from './assets/gdec-logo.png';
 
@@ -295,17 +295,11 @@ export default function Dashboard() {
   };
 
   try {
-    const token = localStorage.getItem('token');
-    const res = await fetch('http://localhost:3000/insights/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify(summary),
-    });
-    const text = await res.text();
-    setInsights(text);
+    // Use the shared `api` axios instance so this call picks up VITE_API_URL
+    // in production and attaches the Bearer token via the request interceptor
+    // (instead of the old hardcoded http://localhost:3000 fetch).
+    const res = await api.post('/insights/generate', summary);
+    setInsights(typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
   } catch (err: any) {
     setInsights(`Error: ${err?.message || 'Unknown error. Please try again.'}`);
   } finally {

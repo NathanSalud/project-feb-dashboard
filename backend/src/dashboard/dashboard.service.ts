@@ -7,10 +7,19 @@ export class DashboardService {
 
   private validateDates(dateFrom?: string, dateTo?: string) {
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (dateFrom && !dateRegex.test(dateFrom))
-      throw new BadRequestException(`Invalid dateFrom format. Expected YYYY-MM-DD, got: ${dateFrom}`);
-    if (dateTo && !dateRegex.test(dateTo))
-      throw new BadRequestException(`Invalid dateTo format. Expected YYYY-MM-DD, got: ${dateTo}`);
+    const assertValidDate = (label: string, value?: string) => {
+      if (!value) return;
+      if (!dateRegex.test(value))
+        throw new BadRequestException(`Invalid ${label} format. Expected YYYY-MM-DD, got: ${value}`);
+      // Shape can be valid but the date impossible (e.g. 2023-13-45, 2023-02-30).
+      // Round-trip through UTC and confirm no component rolled over.
+      const [y, m, d] = value.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d)
+        throw new BadRequestException(`Invalid ${label}: not a real calendar date: ${value}`);
+    };
+    assertValidDate('dateFrom', dateFrom);
+    assertValidDate('dateTo', dateTo);
     if (dateFrom && dateTo && dateFrom > dateTo)
       throw new BadRequestException('dateFrom cannot be later than dateTo');
   }
