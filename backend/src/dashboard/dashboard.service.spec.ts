@@ -22,6 +22,13 @@ describe('DashboardService', () => {
     expect(cache.getTimeSeries).not.toHaveBeenCalled();
   });
 
+  it('rejects an impossible calendar date (month 13) before fetching', async () => {
+    await expect(service.getTimeSeries('A', false, '2023-13-45')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(cache.getTimeSeries).not.toHaveBeenCalled();
+  });
+
   it('rejects dateFrom after dateTo before fetching', async () => {
     await expect(
       service.getDiscounts('A', false, '2024-02-01', '2024-01-01'),

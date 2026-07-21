@@ -52,7 +52,7 @@ Consequences to keep in mind:
 - **Tenant isolation = `filterCompany()` / `filterAndDate()` in `CacheService`**: non-admins get rows where `COMPANY_NAME === companyName`; `isAdmin` bypasses the filter and returns everything. `companyName` strings in `USERS` must exactly match `COMPANY_NAME` values in Snowflake or a tenant sees nothing. When touching any getter, preserve the `isAdmin` bypass and the company filter — that is the entire access-control model.
 
 ### Insights (Anthropic)
-`InsightsService` (`backend/src/insights/insights.service.ts`) sends the current dashboard payload to the Claude API (`claude-sonnet-4-6`) for executive-summary insights. Uses `@anthropic-ai/sdk`. Note: `frontend/src/Dashboard.tsx`'s `generateInsights()` currently calls `http://localhost:3000/insights/generate` via a hardcoded URL (not the `api.ts` axios instance), so it does not pick up `VITE_API_URL` in production.
+`InsightsService` (`backend/src/insights/insights.service.ts`) sends the current dashboard payload to the Claude API (`claude-sonnet-4-6`) for executive-summary insights. Uses `@anthropic-ai/sdk`. `frontend/src/Dashboard.tsx`'s `generateInsights()` calls `/insights/generate` through the shared `api.ts` axios instance, so it picks up `VITE_API_URL` in production and attaches the Bearer token via the request interceptor.
 
 ### Frontend
 - `App.tsx` is the entire router: `useAuth()` → show `Login` if no user, else `Dashboard`.
