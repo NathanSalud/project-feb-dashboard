@@ -144,11 +144,15 @@ export const USERS: { username: string; passwordHash: string; user: User }[] = [
     },
   },
   {
-    username: 'benby_enterprises_inc',
+    // Login is the client brand 'pedigree', not the distributor. companyName stays
+    // 'Benby Enterprises, Inc.' — it's the Snowflake tenant-filter key (Pedigree's
+    // sales are tagged to that COMPANY_NAME) — and displayName drives the header.
+    username: 'pedigree',
     passwordHash: HASH,
     user: {
-      username: 'benby_enterprises_inc',
+      username: 'pedigree',
       companyName: 'Benby Enterprises, Inc.',
+      displayName: 'Pedigree',
       accountNames: ['Pedigree'],
       platforms: ['Shopee', 'Tiktok'],
       isAdmin: false,
