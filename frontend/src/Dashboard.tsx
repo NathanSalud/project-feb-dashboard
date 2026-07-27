@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { useAuth } from './AuthContext';
 import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
+import PersonasTab from './PersonasTab';
 import ChangePasswordModal from './ChangePasswordModal';
 import gdecLogo from './assets/gdec-logo.png';
 
@@ -36,6 +37,9 @@ export default function Dashboard() {
   // UI shell only. No backend brand data yet; the Brand <select> and its `brand`
   // API param are forward-wired and inert until this is flipped on.
   const SHOW_BRAND_FILTER = false;
+  // Buyer-persona (RFM) tab. Backend is live at /dashboard/personas; kept off until
+  // metric-owner sign-off on weights/thresholds and fact-column verification.
+  const SHOW_PERSONAS = false;
 
   const { user, logout } = useAuth();
   const [cAcc, setCAcc]           = useState('all');
@@ -43,7 +47,7 @@ export default function Dashboard() {
   const [cBrand, setCBrand]       = useState('all');
   const [dateFrom, setDateFrom]   = useState('2023-01-01');
   const [dateTo, setDateTo]       = useState('2026-05-31');
-  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
+  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'|'personas'>('breakdown');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
   const [sortCol, setSortCol] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -469,13 +473,18 @@ export default function Dashboard() {
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {(['breakdown','shops','products','doi'] as const).map(t => (
+          {(['breakdown','shops','products','doi','personas'] as const).filter(t => t !== 'personas' || SHOW_PERSONAS).map(t => (
             <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
-              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
+              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : t === 'doi' ? 'Inventory DOI' : 'Personas'}
             </button>
           ))}
         </div>
 
+        {activeTab === 'personas' && (
+          <PersonasTab platform={cPlat} isAdmin={!!user?.isAdmin} />
+        )}
+
+        {activeTab !== 'personas' && (
         <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div>
@@ -601,6 +610,7 @@ export default function Dashboard() {
           )}
           </div>
         </div>
+        )}
 
         {/* SALES BY PLATFORM + PROVINCE */}
         {sectionLabel('Geographic & Platform Distribution', 'geographic-platform')}

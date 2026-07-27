@@ -71,6 +71,10 @@ export class DashboardService {
   getDoi(companyName: string, isAdmin: boolean) {
     return this.cache.getDoi(companyName, isAdmin);
   }
+
+  getPersonas(companyName: string, isAdmin: boolean) {
+    return this.cache.getPersonas(companyName, isAdmin);
+  }
   
   getStatus() {
     return this.cache.getStatus();
