@@ -14,6 +14,26 @@ const VALID_REVENUE_STATUSES = ['Completed', 'Shipped', 'Delivered', 'Ready to S
 // Pre-rendered SQL fragment, e.g. "'Completed','Shipped','Delivered','Ready to Ship'"
 const VALID_REVENUE_STATUS_SQL = VALID_REVENUE_STATUSES.map(s => `'${s}'`).join(',');
 
+// ── Buyer-persona scoring config ─────────────────────────────────────
+// Pat's playbook formula, percentile-calibrated: each input is scored 1-10 by
+// decile WITHIN the tenant's own (company, platform), then combined and banded.
+//   Persona Score = 40%*LTV + 25%*Frequency + 20%*AOV + 15%*Repeat(=recency)
+const PERSONA_WEIGHTS = { ltv: 0.40, freq: 0.25, aov: 0.20, rr: 0.15 };
+// Tier cut-offs on the 1-10 weighted score (metric-owner adjustable).
+const PERSONA_TIERS = { platinum: 8, gold: 5, silver: 2 };
+// Only score a (company, platform) with at least this many real buyers — below
+// this, deciles are meaningless. Smaller segments are omitted from the dataset.
+const PERSONA_MIN_SHOPPERS = 500;
+// Value metric = gross ORIGINAL_PRODUCT_PRICE, matching the dashboard REVENUE KPI
+// so persona revenue reconciles. Swap to net by subtracting the discounts.
+const PERSONA_VALUE_EXPR = 'f.ORIGINAL_PRODUCT_PRICE';
+// Buyer key on FACT_PLATFORM_ORDER_ITEMS (verified via DESCRIBE TABLE).
+const PERSONA_SHOPPER_COL = 'f.BUYER_ID';
+// The fact has no campaign flag, so promo-sensitivity uses DISCOUNT RELIANCE:
+// the share of a tier's gross revenue that carried any platform/seller discount —
+// a direct, fully-sourced deal-seeking signal.
+const PERSONA_DISCOUNT_EXPR = '(COALESCE(f.PLATFORM_DISCOUNT, 0) + COALESCE(f.SELLER_DISCOUNT, 0))';
+
 @Injectable()
 export class CacheService implements OnModuleInit {
   private readonly logger = new Logger(CacheService.name);
@@ -58,6 +78,7 @@ export class CacheService implements OnModuleInit {
         this.refreshAccounts(),
         this.refreshGeo(),
         this.refreshDoi(),
+        this.refreshPersonas(),
       ]);
       this.lastRefreshed = new Date();
       this.logger.log(`Cache refreshed successfully at ${this.lastRefreshed.toISOString()}`);
@@ -89,6 +110,85 @@ export class CacheService implements OnModuleInit {
     `);
     this.cache.set('kpis', data);
     this.logger.log(`KPIs cached — ${data.length} rows`);
+  }
+
+  // Buyer personas: one row per (company, platform, tier). Scores every eligible
+  // shopper on the RFM/Pat formula (percentile-calibrated per company+platform),
+  // then rolls up to tier level so the cached payload stays tiny (~hundreds of
+  // rows). Lifetime metrics — intentionally NOT date-filtered. Refinements:
+  // sentinel-ID filter, min-population gate, and the shared revenue-status guard.
+  private async refreshPersonas() {
+    const W = PERSONA_WEIGHTS;
+    const value = PERSONA_VALUE_EXPR;
+    const shopper = PERSONA_SHOPPER_COL;
+    const score = `(${W.ltv}*ltv_score + ${W.freq}*freq_score + ${W.aov}*aov_score + ${W.rr}*rr_score)`;
+    try {
+    const data = await this.snowflake.query(`
+      WITH shopper AS (
+        SELECT
+          a.COMPANY_NAME,
+          a.PLATFORM,
+          ${shopper}                                                      AS SHOPPER,
+          SUM(${value})                                                   AS value,
+          COUNT(DISTINCT f.PLATFORM_ORDER_ID)                             AS orders,
+          SUM(${value}) / NULLIF(COUNT(DISTINCT f.PLATFORM_ORDER_ID), 0)  AS aov,
+          DATEDIFF('day', MAX(f.ORDER_DATE), CURRENT_DATE)                AS days_since_last,
+          SUM(IFF(${PERSONA_DISCOUNT_EXPR} > 0, ${value}, 0))
+            / NULLIF(SUM(${value}), 0)                                    AS discount_share
+        FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS f
+        INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID
+        WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+          AND f.ORDER_DATE >= '2023-01-01'
+          AND a.IS_ACTIVE = TRUE
+          AND a.ACCOUNT_NAME != 's'
+          AND ${shopper} IS NOT NULL
+          AND UPPER(TRIM(${shopper})) NOT IN ('0', 'N/A', 'NULL', '-1', '')
+        GROUP BY a.COMPANY_NAME, a.PLATFORM, ${shopper}
+      ),
+      scored AS (
+        SELECT s.*,
+          COUNT(*)  OVER (PARTITION BY COMPANY_NAME, PLATFORM)                              AS seg_shoppers,
+          NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY value  ASC)          AS ltv_score,
+          NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY orders ASC)          AS freq_score,
+          NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY aov    ASC)          AS aov_score,
+          NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY days_since_last DESC) AS rr_score
+        FROM shopper s
+      ),
+      persona AS (
+        SELECT *,
+          CASE
+            WHEN ${score} >= ${PERSONA_TIERS.platinum} THEN 'Loyalist'
+            WHEN ${score} >= ${PERSONA_TIERS.gold}     THEN 'Habitual'
+            WHEN ${score} >= ${PERSONA_TIERS.silver}   THEN 'Deal Hunter'
+            ELSE 'Window Buyer'
+          END AS TIER
+        FROM scored
+        WHERE seg_shoppers >= ${PERSONA_MIN_SHOPPERS}
+      )
+      SELECT
+        COMPANY_NAME,
+        PLATFORM,
+        TIER,
+        COUNT(*)                                                                                AS SHOPPERS,
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY COMPANY_NAME, PLATFORM), 1)    AS PCT_SHOPPERS,
+        ROUND(SUM(value))                                                                       AS TIER_REVENUE,
+        ROUND(100.0 * SUM(value) / NULLIF(SUM(SUM(value)) OVER (PARTITION BY COMPANY_NAME, PLATFORM), 0), 1) AS PCT_REVENUE,
+        ROUND(AVG(orders), 1)                                                                    AS AVG_ORDERS,
+        ROUND(AVG(aov))                                                                          AS AVG_AOV,
+        ROUND(100.0 * AVG(discount_share), 1)                                                    AS AVG_DISCOUNT_PCT
+      FROM persona
+      GROUP BY COMPANY_NAME, PLATFORM, TIER
+      ORDER BY COMPANY_NAME, PLATFORM, TIER
+    `);
+    this.cache.set('personas', data);
+    this.logger.log(`Personas cached — ${data.length} rows`);
+    } catch (err) {
+      // Fail-soft: a persona-query error (e.g. an unverified fact column) must
+      // never break the rest of the nightly refresh. Serve an empty set; the
+      // frontend tab shows its "no data" state.
+      this.cache.set('personas', []);
+      this.logger.warn(`Personas refresh skipped: ${(err as Error).message}`);
+    }
   }
 
   // Pure Snowflake fetchers for time series — no caching here (policy lives in
@@ -478,6 +578,11 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
 
   getProducts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
     const data = (this.cache.get('products') || []) as any[];
+    return this.filterCompany(data, companyName, isAdmin);
+  }
+
+  getPersonas(companyName: string, isAdmin: boolean) {
+    const data = (this.cache.get('personas') || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
   }
 

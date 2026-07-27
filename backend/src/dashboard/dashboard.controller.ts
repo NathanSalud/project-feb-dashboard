@@ -90,4 +90,12 @@ export class DashboardController {
       req.user.isAdmin,
     );
   }
+
+  @Get('personas')
+  getPersonas(@Request() req) {
+    return this.dashboardService.getPersonas(
+      req.user.companyName,
+      req.user.isAdmin,
+    );
+  }
 }
