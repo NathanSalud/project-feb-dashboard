@@ -415,7 +415,7 @@ export default function Dashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {kpiCard('Total GMV',       fmt(totals.revenue), 'Sales Value before Discounts', TEAL)}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
-          {kpiCard('Avg Order Value', fmt(aov),            'Revenue ÷ orders',                         BLUE2)}
+          {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
           {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
         </div>
@@ -432,7 +432,7 @@ export default function Dashboard() {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {[
-            { title: 'Revenue by Month',    key: 'revenue', color: TEAL,      type: 'line', fmt: fmt,  suffix: '' },
+            { title: 'GMV by Month',        key: 'revenue', color: TEAL,      type: 'line', fmt: fmt,  suffix: '' },
             { title: 'Orders by Month',     key: 'orders',  color: '#22c98a', type: 'bar',  fmt: fmtN, suffix: ' orders' },
             { title: 'AOV by Month',        key: 'aov',     color: GOLD,      type: 'line', fmt: fmt,  suffix: '' },
             { title: 'Items Sold by Month', key: 'items',   color: BLUE2,     type: 'bar',  fmt: fmtN, suffix: ' items' },
@@ -492,7 +492,7 @@ export default function Dashboard() {
                 {activeTab === 'breakdown' ? 'Account & Platform Breakdown' : activeTab === 'shops' ? 'Shop Performance' : activeTab === 'products' ? 'Top Products' : 'Inventory & Days of Inventory'}
               </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginTop: 2 }}>
-                {activeTab === 'breakdown' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'shops' ? 'Revenue, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by revenue · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters · inventory is at warehouse-customer grain; accounts sharing a warehouse customer show combined inventory'}
+                {activeTab === 'breakdown' ? 'GMV, orders and AOV · filtered period' : activeTab === 'shops' ? 'GMV, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by GMV · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters · inventory is at warehouse-customer grain; accounts sharing a warehouse customer show combined inventory'}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -516,7 +516,7 @@ export default function Dashboard() {
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Platform</th>
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Orders</th>
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Items</th>
-                  <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'right' as const }}>Revenue</th>
+                  <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'right' as const }}>GMV</th>
                 </tr></thead>
                 <tbody>
                   {filteredKpis.map((k: any, i: number) => (
@@ -536,7 +536,7 @@ export default function Dashboard() {
             {activeTab === 'shops' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {['Shop','Platform','Shop ID','Orders','Items','AOV','Revenue'].map((h,i) => (
+                  {['Shop','Platform','Shop ID','Orders','Items','AOV','GMV'].map((h,i) => (
                     <th key={h} style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}>{h}</th>
                   ))}
                 </tr></thead>
@@ -558,7 +558,7 @@ export default function Dashboard() {
             {activeTab === 'products' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {['Product','Platform','Orders','Units','ASP','Revenue'].map((h,i) => (
+                  {['Product','Platform','Orders','Units','ASP','GMV'].map((h,i) => (
                     <th key={h} style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=2?'right' as const:'left' as const }}>{h}</th>
                   ))}
                 </tr></thead>
@@ -617,7 +617,7 @@ export default function Dashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)', gap: 12, marginBottom: 20 }}>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Platform</div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Revenue share · filtered period</div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>GMV share · filtered period</div>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
                 <Pie data={platPie} cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value">
@@ -630,7 +630,7 @@ export default function Dashboard() {
           </div>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Province</div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Top 15 provinces by revenue · all time · 2023 onwards</div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Top 15 provinces by GMV · all time · 2023 onwards</div>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
@@ -647,9 +647,9 @@ export default function Dashboard() {
         {sectionLabel('Discount Analysis', 'discount-analysis')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Platform Discount', value: fmt(totals.pd),         sub: `${totals.revenue>0?((totals.pd/totals.revenue)*100).toFixed(1):0}% of revenue`, color: TEAL },
-            { label: 'Seller Discount',   value: fmt(totals.sd),         sub: `${totals.revenue>0?((totals.sd/totals.revenue)*100).toFixed(1):0}% of revenue`, color: GOLD },
-            { label: 'Shipping Discount', value: fmt(totals.ship),       sub: `${totals.revenue>0?((totals.ship/totals.revenue)*100).toFixed(1):0}% of revenue`, color: BLUE2 },
+            { label: 'Platform Discount', value: fmt(totals.pd),         sub: `${totals.revenue>0?((totals.pd/totals.revenue)*100).toFixed(1):0}% of GMV`, color: TEAL },
+            { label: 'Seller Discount',   value: fmt(totals.sd),         sub: `${totals.revenue>0?((totals.sd/totals.revenue)*100).toFixed(1):0}% of GMV`, color: GOLD },
+            { label: 'Shipping Discount', value: fmt(totals.ship),       sub: `${totals.revenue>0?((totals.ship/totals.revenue)*100).toFixed(1):0}% of GMV`, color: BLUE2 },
           ].map(({ label, value, sub, color }) => (
             <div key={label} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '14px 18px', borderLeft: `4px solid ${color}`, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
               <div style={{ fontSize: 10, letterSpacing: '.5px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 8 }}>{label}</div>
@@ -721,7 +721,7 @@ export default function Dashboard() {
         )}
 
         <div style={{ fontSize: 10, color: TEXT3, textAlign: 'center' as const, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
-          Source: GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS · Active accounts · Revenue: ORIGINAL_PRODUCT_PRICE · Geographic data: all time 2023 onwards
+          Source: GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS · Active accounts · GMV: ORIGINAL_PRODUCT_PRICE · Geographic data: all time 2023 onwards
         </div>
         </main>
       </div>
