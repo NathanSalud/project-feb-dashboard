@@ -413,7 +413,7 @@ export default function Dashboard() {
         {/* KPI CARDS */}
         {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
-          {kpiCard('Total Revenue',   fmt(totals.revenue), 'ORIGINAL_PRODUCT_PRICE · filtered period', TEAL)}
+          {kpiCard('Total GMV',       fmt(totals.revenue), 'Sales Value before Discounts', TEAL)}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'Revenue ÷ orders',                         BLUE2)}
           {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
