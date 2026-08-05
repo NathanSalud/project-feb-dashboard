@@ -42,6 +42,7 @@ export default function Dashboard() {
   const SHOW_PERSONAS = false;
 
   const { user, logout } = useAuth();
+  const [cCompany, setCCompany]   = useState('all');
   const [cAcc, setCAcc]           = useState('all');
   const [cPlat, setCPlat]         = useState('all');
   const [cBrand, setCBrand]       = useState('all');
@@ -92,6 +93,7 @@ export default function Dashboard() {
   // global account selector (cAcc); admins keep the raw CUST_ID dropdown.
   const doiFiltered = (doiRaw as any[]).filter(r =>
     (user?.isAdmin ? (doiCustomer === 'all' || r.CUSTOMER_ID === doiCustomer) : true) &&
+    (cCompany === 'all' || r.COMPANY_NAME === cCompany) &&
     (cAcc === 'all' || (r.ACCOUNT_NAMES || []).includes(cAcc))
   );
 
@@ -120,7 +122,21 @@ export default function Dashboard() {
   const platforms = [...new Set(kpis.map((k: any) => k.PLATFORM))] as string[];
   const accounts  = [...new Set(kpis.map((k: any) => k.ACCOUNT_NAME))] as string[];
 
+  // Admin-only drill-down: distinct companies, and accounts cascaded to the
+  // currently selected company (so the account list stays scoped, not a flat
+  // dump of every account across every brand).
+  const companies = [...new Set(kpis.map((k: any) => k.COMPANY_NAME))].filter(Boolean).sort() as string[];
+  const adminAccounts = [...new Set(
+    kpis.filter((k: any) => cCompany === 'all' || k.COMPANY_NAME === cCompany)
+        .map((k: any) => k.ACCOUNT_NAME)
+  )].filter(Boolean).sort() as string[];
+
+  // Company predicate — inert for tenants (cCompany stays 'all'); the real
+  // access boundary remains the accountNames / isAdmin check below.
+  const companyMatch = (r: any) => cCompany === 'all' || r.COMPANY_NAME === cCompany;
+
   const filteredKpis = kpis.filter((k: any) =>
+    companyMatch(k) &&
     (cPlat === 'all' || k.PLATFORM === cPlat) &&
     (cAcc  === 'all' || k.ACCOUNT_NAME === cAcc) &&
     (user?.isAdmin || user?.accountNames?.includes(k.ACCOUNT_NAME))
@@ -129,6 +145,7 @@ export default function Dashboard() {
   // KPI totals from time series (date-aware)
   const tsRevOrd = timeSeries
     .filter((r: any) =>
+      companyMatch(r) &&
       (cPlat === 'all' || r.PLATFORM === cPlat) &&
       (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
       (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
@@ -168,7 +185,7 @@ export default function Dashboard() {
   const chartData = (() => {
     const map: Record<string, {revenue:number;orders:number;items:number;plat:Record<string,PerPlat>}> = {};
     timeSeries.forEach((r: any) => {
-      if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
+      if(!companyMatch(r) || (cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE||r.ORDER_MONTH).slice(0,10);
       const key = groupKey(raw);
       if(!map[key]) map[key] = {revenue:0,orders:0,items:0,plat:{}};
@@ -220,6 +237,7 @@ export default function Dashboard() {
   // Geo data
   const geoData = (() => {
     const filtered = geoRaw.filter((r: any) =>
+      companyMatch(r) &&
       (cPlat === 'all' || r.PLATFORM === cPlat) &&
       (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
       (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
@@ -238,6 +256,7 @@ export default function Dashboard() {
   const discChartData = (() => {
     const map: Record<string, {pd:number;sd:number;ship:number;sship:number}> = {};
     discountsRaw.forEach((r: any) => {
+      if(!companyMatch(r)) return;
       if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       if(!user?.isAdmin && !user?.accountNames?.includes(r.ACCOUNT_NAME)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE).slice(0,10);
@@ -311,8 +330,8 @@ export default function Dashboard() {
   }
 };
 
-  const filteredShops    = shops.filter((s: any) => (cPlat==='all'||s.PLATFORM===cPlat)&&(cAcc==='all'||s.ACCOUNT_NAME===cAcc));
-  const filteredProducts = products.filter((p: any) => (cPlat==='all'||p.PLATFORM===cPlat)&&(cAcc==='all'||p.ACCOUNT_NAME===cAcc));
+  const filteredShops    = shops.filter((s: any) => companyMatch(s)&&(cPlat==='all'||s.PLATFORM===cPlat)&&(cAcc==='all'||s.ACCOUNT_NAME===cAcc));
+  const filteredProducts = products.filter((p: any) => companyMatch(p)&&(cPlat==='all'||p.PLATFORM===cPlat)&&(cAcc==='all'||p.ACCOUNT_NAME===cAcc));
 
   const ttStyle = { backgroundColor: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT1, fontSize: 11 };
 
@@ -343,6 +362,26 @@ export default function Dashboard() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
+          {user?.isAdmin && (
+            <select onChange={e => { setCCompany(e.target.value); setCAcc('all'); }} value={cCompany} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
+              <option value="all">All Companies</option>
+              {companies.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          {user?.isAdmin && (
+            <select onChange={e => setCAcc(e.target.value)} value={cAcc} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
+              <option value="all">All Accounts</option>
+              {adminAccounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          )}
+          {user?.isAdmin && (
+            <select onChange={e => setCPlat(e.target.value)} value={cPlat} disabled={activeTab === 'doi'}
+              title={activeTab === 'doi' ? 'Platform does not apply to inventory (DOI)' : ''}
+              style={{ background: WHITE, border: `1px solid ${BORDER}`, color: activeTab === 'doi' ? TEXT3 : TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: activeTab === 'doi' ? 'not-allowed' : 'pointer' }}>
+              <option value="all">All Platforms</option>
+              {platforms.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          )}
           {!user?.isAdmin && accounts.length > 1 && (
             <select onChange={e => setCAcc(e.target.value)} value={cAcc} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
               <option value="all">All Accounts</option>
@@ -512,7 +551,8 @@ export default function Dashboard() {
             {activeTab === 'breakdown' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {!user?.isAdmin && <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Account</th>}
+                  {user?.isAdmin && <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Company</th>}
+                  <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Account</th>
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Platform</th>
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Orders</th>
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>Items</th>
@@ -521,7 +561,8 @@ export default function Dashboard() {
                 <tbody>
                   {filteredKpis.map((k: any, i: number) => (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
-                      {!user?.isAdmin && <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2 }}>{k.ACCOUNT_NAME}</td>}
+                      {user?.isAdmin && <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontWeight: 500 }}>{k.COMPANY_NAME}</td>}
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2 }}>{k.ACCOUNT_NAME}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}>
                         <span style={{ background: `${PLAT_COLORS[k.PLATFORM] || TEAL}18`, color: PLAT_COLORS[k.PLATFORM] || TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{k.PLATFORM}</span>
                       </td>
