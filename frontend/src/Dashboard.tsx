@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
   Tooltip, ResponsiveContainer, CartesianGrid,
@@ -47,7 +47,9 @@ export default function Dashboard() {
   const [cPlat, setCPlat]         = useState('all');
   const [cBrand, setCBrand]       = useState('all');
   const [dateFrom, setDateFrom]   = useState('2023-01-01');
-  const [dateTo, setDateTo]       = useState('2026-05-31');
+  // Start the end date at today so the initial load never truncates the newest
+  // data; an effect below snaps it down to the latest day actually present.
+  const [dateTo, setDateTo]       = useState(() => new Date().toISOString().slice(0, 10));
   const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'|'personas'>('breakdown');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
   const [sortCol, setSortCol] = useState<string>('');
@@ -98,6 +100,21 @@ export default function Dashboard() {
   );
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
+
+  // On first data load, snap the end date to the latest day present in the data,
+  // so the default range always ends on the newest (day-1) data instead of a
+  // stale hardcoded date. Runs once; a manual edit to the end date pins it.
+  const dateToPinned = useRef(false);
+  useEffect(() => {
+    if (dateToPinned.current || !timeSeries.length) return;
+    const latest = (timeSeries as any[]).reduce((mx: string, r: any) => {
+      const d = r.ORDER_DATE instanceof Date
+        ? r.ORDER_DATE.toISOString().slice(0, 10)
+        : String(r.ORDER_DATE || r.ORDER_MONTH || '').slice(0, 10);
+      return d > mx ? d : mx;
+    }, '');
+    if (latest) { setDateTo(latest); dateToPinned.current = true; }
+  }, [timeSeries]);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -407,7 +424,7 @@ export default function Dashboard() {
             <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
             <span style={{ color: TEXT3 }}>—</span>
             <span style={{ fontSize: 10.5, color: TEXT3 }}>To</span>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
+            <input type="date" value={dateTo} onChange={e => { dateToPinned.current = true; setDateTo(e.target.value); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
           </div>
           {isLoading && <span style={{ fontSize: 11, color: TEAL }}>⟳ Loading...</span>}
           <button onClick={logout} style={{ padding: '5px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 12, fontFamily: 'inherit', color: '#e85555', background: WHITE, cursor: 'pointer' }}>Sign out</button>
