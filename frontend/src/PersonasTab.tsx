@@ -29,13 +29,19 @@ const card: React.CSSProperties = {
 const title: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: TEXT1 };
 const note: React.CSSProperties = { fontSize: 10.5, color: TEXT3, marginTop: 2, marginBottom: 12 };
 
-export default function PersonasTab({ platform, isAdmin }: { platform: string; isAdmin: boolean }) {
+export default function PersonasTab({ platform, company = 'all', isAdmin }: { platform: string; company?: string; isAdmin: boolean }) {
   const { data: raw = [], isFetching } = useQuery({
     queryKey: ['personas'],
     queryFn: () => getPersonas().then(r => r.data),
   });
 
-  const rows = (raw as any[]).filter(r => platform === 'all' || r.PLATFORM === platform);
+  // Persona rows are at (company, platform, tier) grain. Narrow by the admin's
+  // Company and Platform filters; there is no account-level persona grain, so the
+  // Account selector does not further filter this view.
+  const rows = (raw as any[]).filter(r =>
+    (company === 'all' || r.COMPANY_NAME === company) &&
+    (platform === 'all' || r.PLATFORM === platform)
+  );
 
   // Rows are per (company, platform, tier). When multiple platforms are in view,
   // sum counts/revenue and take shopper-weighted averages.
@@ -81,7 +87,7 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
 
   const pieData = tiers.map(t => ({ name: t.tier, value: +t.pctShoppers.toFixed(1) }));
   const paretoData = tiers.map(t => ({
-    name: t.tier, Buyers: +t.pctShoppers.toFixed(1), Revenue: +t.pctRevenue.toFixed(1),
+    name: t.tier, Buyers: +t.pctShoppers.toFixed(1), GMV: +t.pctRevenue.toFixed(1),
   }));
   const promoData = tiers.map(t => ({ name: t.tier, Promo: +t.promo.toFixed(1) }));
 
@@ -89,7 +95,9 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
     <div style={{ display: 'grid', gap: 16, marginBottom: 20 }}>
       {isAdmin && (
         <div style={{ fontSize: 10.5, color: TEXT3 }}>
-          Admin view aggregates persona tiers across all companies — use a tenant login for a single-brand read.
+          {company === 'all'
+            ? 'Admin view — persona tiers aggregated across all companies. Pick a Company above for a single-brand read.'
+            : `Admin view — personas for ${company}.`}
         </div>
       )}
 
@@ -112,7 +120,7 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
 
         <div style={card}>
           <div style={title}>Where the value sits</div>
-          <div style={note}>Share of buyers vs share of revenue, per tier</div>
+          <div style={note}>Share of buyers vs share of GMV, per tier</div>
           <ResponsiveContainer width="100%" height={230}>
             <BarChart data={paretoData} margin={{ top: 6, right: 10, left: -8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={BORDER} vertical={false} />
@@ -121,13 +129,13 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
               <Tooltip formatter={(v: any, k: any) => [`${v}%`, k]} />
               <Legend iconType="circle" formatter={(v) => <span style={{ fontSize: 11, color: TEXT2 }}>{v}</span>} />
               <Bar dataKey="Buyers" fill={STEEL} radius={[3, 3, 0, 0]} opacity={0.55} />
-              <Bar dataKey="Revenue" fill={TEAL} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="GMV" fill={TEAL} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
           <div style={{ background: SOFT, borderLeft: `3px solid ${TEAL}`, borderRadius: 8, padding: '9px 12px', fontSize: 12, color: TEXT2, marginTop: 8 }}>
             <b style={{ color: TEAL }}>The gap is the story.</b> {top.tier}s are {top.pctShoppers.toFixed(0)}% of
-            buyers but {top.pctRevenue.toFixed(0)}% of revenue; the bottom two tiers are {bottomTwoBuyers.toFixed(0)}%
-            of buyers and {bottomTwoRev.toFixed(0)}% of revenue.
+            buyers but {top.pctRevenue.toFixed(0)}% of GMV; the bottom two tiers are {bottomTwoBuyers.toFixed(0)}%
+            of buyers and {bottomTwoRev.toFixed(0)}% of GMV.
           </div>
         </div>
       </div>
@@ -139,7 +147,7 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
           <div style={note}>Who each tier is, and how they buy</div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>
-              {['Persona', 'Buyers', '% Buyers', '% Rev', 'Avg orders', 'Avg AOV'].map((h, i) => (
+              {['Persona', 'Buyers', '% Buyers', '% GMV', 'Avg orders', 'Avg AOV'].map((h, i) => (
                 <th key={h} style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 6px 9px', borderBottom: `1px solid ${BORDER}`, textAlign: i === 0 ? 'left' : 'right' }}>{h}</th>
               ))}
             </tr></thead>
@@ -162,12 +170,12 @@ export default function PersonasTab({ platform, isAdmin }: { platform: string; i
 
         <div style={card}>
           <div style={title}>Discount-reliance lens <span style={{ fontWeight: 500, color: TEXT3, fontSize: 10.5 }}>· separate axis</span></div>
-          <div style={note}>Share of each tier's revenue from discounted orders</div>
+          <div style={note}>Share of each tier's GMV from discounted orders</div>
           <ResponsiveContainer width="100%" height={170}>
             <BarChart data={promoData} layout="vertical" margin={{ top: 2, right: 26, left: 30, bottom: 0 }}>
               <XAxis type="number" unit="%" tick={{ fontSize: 10, fill: TEXT3 }} />
               <YAxis type="category" dataKey="name" width={78} tick={{ fontSize: 10.5, fill: TEXT2 }} />
-              <Tooltip formatter={(v: any) => [`${v}%`, 'Discounted revenue']} />
+              <Tooltip formatter={(v: any) => [`${v}%`, 'Discounted GMV']} />
               <Bar dataKey="Promo" radius={[0, 4, 4, 0]}>
                 {promoData.map(d => <Cell key={d.name} fill={TIER_COLOR[d.name]} />)}
               </Bar>
