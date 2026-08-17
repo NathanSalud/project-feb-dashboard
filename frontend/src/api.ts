@@ -87,7 +87,7 @@ export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string)
 export const getDoi = () =>
   api.get('/dashboard/doi');
 
-export const getPersonas = () =>
-  api.get('/dashboard/personas');
+export const getPersonas = (period = 'lifetime') =>
+  api.get('/dashboard/personas', { params: { period } });
 
 export default api;

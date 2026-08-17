@@ -51,7 +51,7 @@ export default function Dashboard() {
   // Start the end date at today so the initial load never truncates the newest
   // data; an effect below snaps it down to the latest day actually present.
   const [dateTo, setDateTo]       = useState(() => new Date().toISOString().slice(0, 10));
-  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'|'personas'>('breakdown');
+  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
   const [sortCol, setSortCol] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -444,6 +444,7 @@ export default function Dashboard() {
               { id: 'data-tables',          label: 'Data Tables' },
               { id: 'geographic-platform',  label: 'Geographic & Platform' },
               { id: 'discount-analysis',    label: 'Discount Analysis' },
+              ...(SHOW_PERSONAS ? [{ id: 'buyer-personas', label: 'Buyer Personas' }] : []),
             ].map(s => (
               <button key={s.id}
                 onClick={() => document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
@@ -530,18 +531,13 @@ export default function Dashboard() {
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {(['breakdown','shops','products','doi','personas'] as const).filter(t => t !== 'personas' || SHOW_PERSONAS).map(t => (
+          {(['breakdown','shops','products','doi'] as const).map(t => (
             <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
-              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : t === 'doi' ? 'Inventory DOI' : 'Personas'}
+              {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
           ))}
         </div>
 
-        {activeTab === 'personas' && (
-          <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} />
-        )}
-
-        {activeTab !== 'personas' && (
         <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div>
@@ -669,7 +665,6 @@ export default function Dashboard() {
           )}
           </div>
         </div>
-        )}
 
         {/* SALES BY PLATFORM + PROVINCE */}
         {sectionLabel('Geographic & Platform Distribution', 'geographic-platform')}
@@ -749,6 +744,14 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
         </div>
+
+        {/* BUYER PERSONAS (admin-only review) */}
+        {SHOW_PERSONAS && (
+          <>
+            {sectionLabel('Buyer Personas', 'buyer-personas')}
+            <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} />
+          </>
+        )}
 
         {/* AI INSIGHTS */}
         {SHOW_AI_INSIGHTS && (
