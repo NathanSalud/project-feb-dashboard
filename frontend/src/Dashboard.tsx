@@ -37,11 +37,12 @@ export default function Dashboard() {
   // UI shell only. No backend brand data yet; the Brand <select> and its `brand`
   // API param are forward-wired and inert until this is flipped on.
   const SHOW_BRAND_FILTER = false;
-  // Buyer-persona (RFM) tab. Backend is live at /dashboard/personas; kept off until
-  // metric-owner sign-off on weights/thresholds and fact-column verification.
-  const SHOW_PERSONAS = false;
-
   const { user, logout } = useAuth();
+  // Buyer-persona (RFM) tab. Backend is live at /dashboard/personas. Shown to the
+  // gdec_admin account ONLY for internal review of the data/filters before any
+  // client rollout (free vs. subscription tier still TBD). Flip to a broader
+  // condition (or `true`) when it's approved for tenants.
+  const SHOW_PERSONAS = !!user?.isAdmin;
   const [cCompany, setCCompany]   = useState('all');
   const [cAcc, setCAcc]           = useState('all');
   const [cPlat, setCPlat]         = useState('all');
@@ -537,7 +538,7 @@ export default function Dashboard() {
         </div>
 
         {activeTab === 'personas' && (
-          <PersonasTab platform={cPlat} isAdmin={!!user?.isAdmin} />
+          <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} />
         )}
 
         {activeTab !== 'personas' && (
