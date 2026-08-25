@@ -41,6 +41,20 @@ const PERSONA_SHOPPER_COL = 'f.BUYER_ID';
 // a direct, fully-sourced deal-seeking signal.
 const PERSONA_DISCOUNT_EXPR = '(COALESCE(f.PLATFORM_DISCOUNT, 0) + COALESCE(f.SELLER_DISCOUNT, 0))';
 
+// Persona time windows. Tiers are recomputed WITHIN each window — the NTILE
+// deciles are calibrated on that window's own buyer population — and recency is
+// measured to the window end (today, for these trailing windows), so all four
+// RFM inputs share the same window. Keys are the API `period` values; each value
+// is the SQL date-floor predicate applied to the fact. All stay within the 2023+
+// scope. Personas are precomputed per period on refresh and cached separately.
+const PERSONA_PERIODS: Record<string, string> = {
+  lifetime: `f.ORDER_DATE >= '2023-01-01'`,
+  ytd:      `f.ORDER_DATE >= DATE_TRUNC('year', CURRENT_DATE)`,
+  '12m':    `f.ORDER_DATE >= DATEADD('month', -12, CURRENT_DATE)`,
+  '6m':     `f.ORDER_DATE >= DATEADD('month', -6, CURRENT_DATE)`,
+};
+const PERSONA_DEFAULT_PERIOD = 'lifetime';
+
 @Injectable()
 export class CacheService implements OnModuleInit {
   private readonly logger = new Logger(CacheService.name);
@@ -124,13 +138,15 @@ export class CacheService implements OnModuleInit {
   // then rolls up to tier level so the cached payload stays tiny (~hundreds of
   // rows). Lifetime metrics — intentionally NOT date-filtered. Refinements:
   // sentinel-ID filter, min-population gate, and the shared revenue-status guard.
-  private async refreshPersonas() {
+  // Builds the persona RFM query for a given date-floor predicate (see
+  // PERSONA_PERIODS). Tiers/deciles are recomputed on whatever window the floor
+  // selects; recency (days_since_last) is measured to CURRENT_DATE = window end.
+  private personaQuery(dateFloor: string): string {
     const W = PERSONA_WEIGHTS;
     const value = PERSONA_VALUE_EXPR;
     const shopper = PERSONA_SHOPPER_COL;
     const score = `(${W.ltv}*ltv_score + ${W.freq}*freq_score + ${W.aov}*aov_score + ${W.rr}*rr_score)`;
-    try {
-    const data = await this.snowflake.query(`
+    return `
       WITH shopper AS (
         SELECT
           a.COMPANY_NAME,
@@ -145,7 +161,7 @@ export class CacheService implements OnModuleInit {
         FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
         INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
         WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
-          AND f.ORDER_DATE >= '2023-01-01'
+          AND ${dateFloor}
           AND a.IS_ACTIVE = TRUE
           AND a.ACCOUNT_NAME != 's'
           AND ${shopper} IS NOT NULL
@@ -186,15 +202,25 @@ export class CacheService implements OnModuleInit {
       FROM persona
       GROUP BY COMPANY_NAME, PLATFORM, TIER
       ORDER BY COMPANY_NAME, PLATFORM, TIER
-    `);
-    this.cache.set('personas', data);
-    this.logger.log(`Personas cached — ${data.length} rows`);
-    } catch (err) {
-      // Fail-soft: a persona-query error (e.g. an unverified fact column) must
-      // never break the rest of the nightly refresh. Serve an empty set; the
-      // frontend tab shows its "no data" state.
-      this.cache.set('personas', []);
-      this.logger.warn(`Personas refresh skipped: ${(err as Error).message}`);
+    `;
+  }
+
+  // Precompute personas for every time window and cache each under
+  // `personas:<period>`. Windows are independent; run sequentially to avoid
+  // spiking the warehouse with four heavy decile queries at once.
+  private async refreshPersonas() {
+    for (const [period, floor] of Object.entries(PERSONA_PERIODS)) {
+      try {
+        const data = await this.snowflake.query(this.personaQuery(floor));
+        this.cache.set(`personas:${period}`, data);
+        this.logger.log(`Personas[${period}] cached — ${data.length} rows`);
+      } catch (err) {
+        // Fail-soft per window: a persona-query error must never break the rest
+        // of the nightly refresh. Serve an empty set; the frontend shows its
+        // "no data" state for that window.
+        this.cache.set(`personas:${period}`, []);
+        this.logger.warn(`Personas[${period}] refresh skipped: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -588,8 +614,10 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     return this.filterCompany(data, companyName, isAdmin);
   }
 
-  getPersonas(companyName: string, isAdmin: boolean) {
-    const data = (this.cache.get('personas') || []) as any[];
+  getPersonas(companyName: string, isAdmin: boolean, period = PERSONA_DEFAULT_PERIOD) {
+    // Unknown/absent period falls back to the default window.
+    const key = PERSONA_PERIODS[period] ? `personas:${period}` : `personas:${PERSONA_DEFAULT_PERIOD}`;
+    const data = (this.cache.get(key) || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
   }
 

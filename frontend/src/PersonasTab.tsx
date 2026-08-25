@@ -1,9 +1,19 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend, CartesianGrid,
 } from 'recharts';
 import { getPersonas } from './api';
+
+// Persona time windows. Tiers are recomputed within the selected window server-
+// side (deciles calibrated on that window's buyers); `key` is the API `period`.
+const PERIODS = [
+  { key: 'ytd',      label: 'YTD',         note: 'year-to-date' },
+  { key: '6m',       label: 'Past 6 mo',   note: 'past 6 months' },
+  { key: '12m',      label: 'Past 12 mo',  note: 'past 12 months' },
+  { key: 'lifetime', label: 'Lifetime',    note: 'lifetime (2023–present)' },
+] as const;
 
 // Persona view: RFM/persona segmentation, per platform, tenant-scoped server-side.
 // Rows: { COMPANY_NAME, PLATFORM, TIER, SHOPPERS, PCT_SHOPPERS, TIER_REVENUE,
@@ -30,10 +40,27 @@ const title: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: TEXT1
 const note: React.CSSProperties = { fontSize: 10.5, color: TEXT3, marginTop: 2, marginBottom: 12 };
 
 export default function PersonasTab({ platform, company = 'all', isAdmin }: { platform: string; company?: string; isAdmin: boolean }) {
+  const [period, setPeriod] = useState<string>('lifetime');
+  const periodNote = PERIODS.find(p => p.key === period)?.note ?? 'lifetime (2023–present)';
+
   const { data: raw = [], isFetching } = useQuery({
-    queryKey: ['personas'],
-    queryFn: () => getPersonas().then(r => r.data),
+    queryKey: ['personas', period],
+    queryFn: () => getPersonas(period).then(r => r.data),
   });
+
+  // Timeframe selector — always visible so the window can be switched even while
+  // loading or when a window has no qualifying segments.
+  const periodBar = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 10, color: TEXT3, letterSpacing: '.4px', textTransform: 'uppercase', marginRight: 2 }}>Timeframe</span>
+      {PERIODS.map(p => (
+        <button key={p.key} onClick={() => setPeriod(p.key)}
+          style={{ padding: '4px 10px', borderRadius: 7, border: `1px solid ${period === p.key ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: period === p.key ? 'rgba(26,122,138,0.1)' : WHITE, color: period === p.key ? TEAL : TEXT2 }}>
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
 
   // Persona rows are at (company, platform, tier) grain. Narrow by the admin's
   // Company and Platform filters; there is no account-level persona grain, so the
@@ -68,14 +95,23 @@ export default function PersonasTab({ platform, company = 'all', isAdmin }: { pl
   }));
 
   if (isFetching) {
-    return <div style={card}><div style={{ color: TEXT3, fontSize: 12, padding: 24 }}>Loading personas…</div></div>;
+    return (
+      <div style={{ display: 'grid', gap: 12, marginBottom: 20 }}>
+        {periodBar}
+        <div style={card}><div style={{ color: TEXT3, fontSize: 12, padding: 24 }}>Loading personas…</div></div>
+      </div>
+    );
   }
   if (!totShoppers) {
     return (
-      <div style={card}>
-        <div style={{ color: TEXT2, fontSize: 12.5, padding: 20, lineHeight: 1.6 }}>
-          No persona data for this selection. Segments under 500 buyers are omitted, so a small
-          account or platform may not appear — try switching the platform filter to <b>All Platforms</b>.
+      <div style={{ display: 'grid', gap: 12, marginBottom: 20 }}>
+        {periodBar}
+        <div style={card}>
+          <div style={{ color: TEXT2, fontSize: 12.5, padding: 20, lineHeight: 1.6 }}>
+            No persona data for this selection ({periodNote}). Segments under 500 buyers are omitted, so a small
+            account, platform, or short window may not appear — try a wider timeframe or switching the platform
+            filter to <b>All Platforms</b>.
+          </div>
         </div>
       </div>
     );
@@ -93,11 +129,12 @@ export default function PersonasTab({ platform, company = 'all', isAdmin }: { pl
 
   return (
     <div style={{ display: 'grid', gap: 16, marginBottom: 20 }}>
+      {periodBar}
       {isAdmin && (
-        <div style={{ fontSize: 10.5, color: TEXT3 }}>
+        <div style={{ fontSize: 10.5, color: TEXT3, marginTop: -6 }}>
           {company === 'all'
-            ? 'Admin view — persona tiers aggregated across all companies. Pick a Company above for a single-brand read.'
-            : `Admin view — personas for ${company}.`}
+            ? `Admin view — persona tiers aggregated across all companies · ${periodNote}. Pick a Company above for a single-brand read.`
+            : `Admin view — personas for ${company} · ${periodNote}.`}
         </div>
       )}
 
@@ -190,7 +227,7 @@ export default function PersonasTab({ platform, company = 'all', isAdmin }: { pl
       </div>
 
       <div style={{ fontSize: 10, color: TEXT3, textAlign: 'center' }}>
-        Behavioral personas from order history · lifetime (2023–present) · tiers &amp; weights pending metric-owner sign-off.
+        Behavioral personas from order history · {periodNote} · tiers recomputed per timeframe · weights pending metric-owner sign-off.
       </div>
     </div>
   );

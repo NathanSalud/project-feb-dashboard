@@ -92,10 +92,11 @@ export class DashboardController {
   }
 
   @Get('personas')
-  getPersonas(@Request() req) {
+  getPersonas(@Request() req, @Query('period') period?: string) {
     return this.dashboardService.getPersonas(
       req.user.companyName,
       req.user.isAdmin,
+      period,
     );
   }
 }
