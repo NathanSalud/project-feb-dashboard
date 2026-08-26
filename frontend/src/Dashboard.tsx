@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { useState, useEffect, useRef } from 'react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
@@ -51,6 +51,12 @@ export default function Dashboard() {
   // Start the end date at today so the initial load never truncates the newest
   // data; an effect below snaps it down to the latest day actually present.
   const [dateTo, setDateTo]       = useState(() => new Date().toISOString().slice(0, 10));
+  // Debounced copies of the range that actually drive the data queries. The
+  // pickers update dateFrom/dateTo immediately (responsive UI); qDateFrom/qDateTo
+  // lag ~400ms so dragging the range doesn't fire a burst of fetches — which,
+  // for the admin's all-company payloads, was the source of the date-change lag.
+  const [qDateFrom, setQDateFrom] = useState('2023-01-01');
+  const [qDateTo, setQDateTo]     = useState(() => new Date().toISOString().slice(0, 10));
   const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
   const [sortCol, setSortCol] = useState<string>('');
@@ -61,21 +67,25 @@ export default function Dashboard() {
   const [showChangePw, setShowChangePw] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
-    queryKey: ['kpis', dateFrom, dateTo, cBrand],
-    queryFn: () => getKpis(dateFrom, dateTo, cBrand).then(r => r.data),
+    queryKey: ['kpis', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getKpis(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const { data: timeSeries = [], isFetching: tFetch } = useQuery({
-    queryKey: ['timeseries', dateFrom, dateTo, cBrand],
-    queryFn: () => getTimeSeries(dateFrom, dateTo, cBrand).then(r => r.data),
+    queryKey: ['timeseries', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const { data: shopsRes, isFetching: sFetch } = useQuery({
-    queryKey: ['shops', dateFrom, dateTo, cBrand],
-    queryFn: () => getShops(dateFrom, dateTo, cBrand).then(r => r.data),
+    queryKey: ['shops', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getShops(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const shops = shopsRes?.data ?? [];
   const { data: productsRes, isFetching: pFetch } = useQuery({
-    queryKey: ['products', dateFrom, dateTo, cBrand],
-    queryFn: () => getProducts(dateFrom, dateTo, cBrand).then(r => r.data),
+    queryKey: ['products', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getProducts(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const products = productsRes?.data ?? [];
   const { data: geoRaw = [] } = useQuery({
@@ -83,8 +93,9 @@ export default function Dashboard() {
     queryFn: () => getGeo().then(r => r.data),
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
-    queryKey: ['discounts', dateFrom, dateTo, cBrand],
-    queryFn: () => getDiscounts(dateFrom, dateTo, cBrand).then(r => r.data),
+    queryKey: ['discounts', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getDiscounts(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const { data: doiRaw = [] } = useQuery({
     queryKey: ['doi'],
@@ -101,6 +112,15 @@ export default function Dashboard() {
   );
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
+
+  // Debounce the query date range: the pickers set dateFrom/dateTo instantly, but
+  // the queries only pick up the change ~400ms after the last edit, so adjusting
+  // the range fires one fetch instead of several. Combined with keepPreviousData
+  // above, the current view stays on screen while the new range loads.
+  useEffect(() => {
+    const t = setTimeout(() => { setQDateFrom(dateFrom); setQDateTo(dateTo); }, 400);
+    return () => clearTimeout(t);
+  }, [dateFrom, dateTo]);
 
   // On first data load, snap the end date to the latest day present in the data,
   // so the default range always ends on the newest (day-1) data instead of a
