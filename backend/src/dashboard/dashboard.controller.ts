@@ -61,12 +61,8 @@ export class DashboardController {
   }
 
   @Get('geo')
-  getGeo(
-    @Request() req,
-    @Query('dateFrom') dateFrom?: string,
-    @Query('dateTo') dateTo?: string,
-  ) {
-    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+  getGeo(@Request() req, @Query('period') period?: string) {
+    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period);
   }
 
   @Get('discounts')
