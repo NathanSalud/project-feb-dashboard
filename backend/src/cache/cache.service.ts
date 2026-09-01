@@ -55,6 +55,19 @@ const PERSONA_PERIODS: Record<string, string> = {
 };
 const PERSONA_DEFAULT_PERIOD = 'lifetime';
 
+// Sales-by-province (geo) time windows. Same precompute-per-window trick as
+// personas: each window is a small province-level aggregate (NOT daily grain),
+// so caching a handful of them is cheap — this is what makes date-scoped geo
+// affordable where a fully date-flexible version was not. Keys are the API
+// `period` values; `overall` reproduces the previous all-time behavior.
+const GEO_PERIODS: Record<string, string> = {
+  overall: `f.ORDER_DATE >= '2023-01-01'`,
+  ytd:     `f.ORDER_DATE >= DATE_TRUNC('year', CURRENT_DATE)`,
+  '12m':   `f.ORDER_DATE >= DATEADD('month', -12, CURRENT_DATE)`,
+  '24m':   `f.ORDER_DATE >= DATEADD('month', -24, CURRENT_DATE)`,
+};
+const GEO_DEFAULT_PERIOD = 'overall';
+
 @Injectable()
 export class CacheService implements OnModuleInit {
   private readonly logger = new Logger(CacheService.name);
@@ -340,8 +353,8 @@ export class CacheService implements OnModuleInit {
   return raw;
 }
 
-private async refreshGeo() {
-  const data = await this.snowflake.query(`
+private geoQuery(dateFloor: string): string {
+  return `
     SELECT
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
@@ -352,37 +365,49 @@ private async refreshGeo() {
     FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
-    AND f.ORDER_DATE >= '2023-01-01'
+    AND ${dateFloor}
     AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
     AND f.SHIPPING_PROVINCE IS NOT NULL
     AND f.SHIPPING_PROVINCE != ''
     GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, f.SHIPPING_PROVINCE
     ORDER BY a.COMPANY_NAME, REVENUE DESC
-  `);
+  `;
+}
 
-  // Normalise province names and merge duplicates
-  const merged: Record<string, any> = {};
-  data.forEach((r: any) => {
-    const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
-    const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
-    if (!merged[key]) {
-      merged[key] = {
-        COMPANY_NAME:      r.COMPANY_NAME,
-        ACCOUNT_NAME:      r.ACCOUNT_NAME,
-        PLATFORM:          r.PLATFORM,
-        SHIPPING_PROVINCE: province,
-        ORDERS:            0,
-        REVENUE:           0,
-      };
+// Precompute Sales-by-Province for every time window and cache each under
+// `geo:<period>`. Same small province-level aggregate per window; run
+// sequentially and fail-soft per window like personas.
+private async refreshGeo() {
+  for (const [period, floor] of Object.entries(GEO_PERIODS)) {
+    try {
+      const data = await this.snowflake.query(this.geoQuery(floor));
+      // Normalise province names and merge duplicates
+      const merged: Record<string, any> = {};
+      data.forEach((r: any) => {
+        const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
+        const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
+        if (!merged[key]) {
+          merged[key] = {
+            COMPANY_NAME:      r.COMPANY_NAME,
+            ACCOUNT_NAME:      r.ACCOUNT_NAME,
+            PLATFORM:          r.PLATFORM,
+            SHIPPING_PROVINCE: province,
+            ORDERS:            0,
+            REVENUE:           0,
+          };
+        }
+        merged[key].ORDERS  += Number(r.ORDERS);
+        merged[key].REVENUE += Number(r.REVENUE);
+      });
+      const result = Object.values(merged);
+      this.cache.set(`geo:${period}`, result);
+      this.logger.log(`Geo[${period}] cached — ${result.length} rows`);
+    } catch (err) {
+      this.cache.set(`geo:${period}`, []);
+      this.logger.warn(`Geo[${period}] refresh skipped: ${(err as Error).message}`);
     }
-    merged[key].ORDERS  += Number(r.ORDERS);
-    merged[key].REVENUE += Number(r.REVENUE);
-  });
-
-  const result = Object.values(merged);
-  this.cache.set('geo', result);
-  this.logger.log(`Geo cached — ${result.length} rows`);
+  }
 }
 
 // Pure Snowflake fetchers for discounts — no caching here (policy lives in
@@ -625,8 +650,9 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     return this.cache.get('accounts') || [];
   }
 
-  getGeo(companyName: string, isAdmin: boolean) {
-  const data = (this.cache.get('geo') || []) as any[];
+  getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD) {
+  const key = GEO_PERIODS[period] ? `geo:${period}` : `geo:${GEO_DEFAULT_PERIOD}`;
+  const data = (this.cache.get(key) || []) as any[];
   return this.filterCompany(data, companyName, isAdmin);
 }
 

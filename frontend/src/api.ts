@@ -78,8 +78,8 @@ export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
-export const getGeo = (dateFrom?: string, dateTo?: string) =>
-  api.get('/dashboard/geo', { params: { dateFrom, dateTo } });
+export const getGeo = (period = 'overall') =>
+  api.get('/dashboard/geo', { params: { period } });
 
 export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand } });

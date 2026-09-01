@@ -26,6 +26,15 @@ const PLAT_COLORS: Record<string, string> = {
 };
 const PIE_COLORS = [TEAL, GOLD, BLUE2, '#22c98a', '#9b6ff0', '#e85555'];
 
+// Sales-by-Province time windows (precomputed & cached per window server-side).
+// `key` is the API `period`; `overall` = all time 2023 onwards (previous default).
+const GEO_PERIODS = [
+  { key: 'overall', label: 'Overall',    note: 'all time · 2023 onwards' },
+  { key: 'ytd',     label: 'YTD',        note: 'year-to-date' },
+  { key: '12m',     label: 'Past 12 mo', note: 'past 12 months' },
+  { key: '24m',     label: 'Past 24 mo', note: 'past 24 months' },
+] as const;
+
 // TODO: replace with real brand list from backend
 const STUB_BRANDS = ['Placeholder Brand A', 'Placeholder Brand B', 'Placeholder Brand C'];
 
@@ -64,6 +73,7 @@ export default function Dashboard() {
   const [insights, setInsights]   = useState<string>('');
   const [insightLoading, setInsightLoading] = useState(false);
   const [doiCustomer, setDoiCustomer] = useState('all');
+  const [geoPeriod, setGeoPeriod] = useState('overall'); // Sales-by-Province time window
   const [showChangePw, setShowChangePw] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
@@ -89,8 +99,9 @@ export default function Dashboard() {
   });
   const products = productsRes?.data ?? [];
   const { data: geoRaw = [] } = useQuery({
-    queryKey: ['geo'],
-    queryFn: () => getGeo().then(r => r.data),
+    queryKey: ['geo', geoPeriod],
+    queryFn: () => getGeo(geoPeriod).then(r => r.data),
+    placeholderData: keepPreviousData,
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
     queryKey: ['discounts', qDateFrom, qDateTo, cBrand],
@@ -703,8 +714,18 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Province</div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Top 15 provinces by GMV · all time · 2023 onwards</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' as const }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Province</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' as const }}>
+                {GEO_PERIODS.map(p => (
+                  <button key={p.key} onClick={() => setGeoPeriod(p.key)}
+                    style={{ padding: '3px 9px', borderRadius: 7, border: `1px solid ${geoPeriod === p.key ? TEAL : BORDER}`, fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer', background: geoPeriod === p.key ? 'rgba(26,122,138,0.1)' : WHITE, color: geoPeriod === p.key ? TEAL : TEXT2 }}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Top 15 provinces by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />

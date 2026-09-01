@@ -58,9 +58,8 @@ export class DashboardService {
     return this.cache.getAccounts();
   }
 
-  getGeo(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-  this.validateDates(dateFrom, dateTo);
-  return this.cache.getGeo(companyName, isAdmin);
+  getGeo(companyName: string, isAdmin: boolean, period?: string) {
+  return this.cache.getGeo(companyName, isAdmin, period);
 }
 
   async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
