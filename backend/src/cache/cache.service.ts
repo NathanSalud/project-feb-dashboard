@@ -87,7 +87,28 @@ export class CacheService implements OnModuleInit {
   private discountsInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
+  // How many per-window warm queries (personas, geo) may hit Snowflake at once.
+  // The four windows of each dataset are independent, so warming them in a small
+  // pool turns startup from sum-of-N into ~sum/limit — the main startup speed-up —
+  // while the cap avoids firing all four heavy decile queries at once (the spike
+  // the original serial loops guarded against). Env-overridable if the warehouse
+  // wants it tighter or looser.
+  private readonly WARM_CONCURRENCY = Math.max(1, Number(process.env.WARM_CONCURRENCY ?? 2));
+
   constructor(private snowflake: SnowflakeService) {}
+
+  // Bounded-concurrency map: runs `worker` over `items`, at most `limit` in
+  // flight at a time. Single-threaded JS means the shift() below never races.
+  private async mapPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+    const queue = [...items];
+    const runners = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+      while (queue.length) {
+        const item = queue.shift() as T;
+        await worker(item);
+      }
+    });
+    await Promise.all(runners);
+  }
 
   async onModuleInit() {
     this.logger.log('Populating cache on startup...');
@@ -219,10 +240,11 @@ export class CacheService implements OnModuleInit {
   }
 
   // Precompute personas for every time window and cache each under
-  // `personas:<period>`. Windows are independent; run sequentially to avoid
-  // spiking the warehouse with four heavy decile queries at once.
+  // `personas:<period>`. Windows are independent and warm in a bounded pool
+  // (WARM_CONCURRENCY) — faster startup without spiking the warehouse with all
+  // four heavy decile queries at once.
   private async refreshPersonas() {
-    for (const [period, floor] of Object.entries(PERSONA_PERIODS)) {
+    await this.mapPool(Object.entries(PERSONA_PERIODS), this.WARM_CONCURRENCY, async ([period, floor]) => {
       try {
         const data = await this.snowflake.query(this.personaQuery(floor));
         this.cache.set(`personas:${period}`, data);
@@ -234,7 +256,7 @@ export class CacheService implements OnModuleInit {
         this.cache.set(`personas:${period}`, []);
         this.logger.warn(`Personas[${period}] refresh skipped: ${(err as Error).message}`);
       }
-    }
+    });
   }
 
   // Pure Snowflake fetchers for time series — no caching here (policy lives in
@@ -376,10 +398,10 @@ private geoQuery(dateFloor: string): string {
 }
 
 // Precompute Sales-by-Province for every time window and cache each under
-// `geo:<period>`. Same small province-level aggregate per window; run
-// sequentially and fail-soft per window like personas.
+// `geo:<period>`. Same small province-level aggregate per window; windows warm
+// in a bounded pool (WARM_CONCURRENCY) and fail-soft per window like personas.
 private async refreshGeo() {
-  for (const [period, floor] of Object.entries(GEO_PERIODS)) {
+  await this.mapPool(Object.entries(GEO_PERIODS), this.WARM_CONCURRENCY, async ([period, floor]) => {
     try {
       const data = await this.snowflake.query(this.geoQuery(floor));
       // Normalise province names and merge duplicates
@@ -407,7 +429,7 @@ private async refreshGeo() {
       this.cache.set(`geo:${period}`, []);
       this.logger.warn(`Geo[${period}] refresh skipped: ${(err as Error).message}`);
     }
-  }
+  });
 }
 
 // Pure Snowflake fetchers for discounts — no caching here (policy lives in
