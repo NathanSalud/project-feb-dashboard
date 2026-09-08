@@ -206,7 +206,14 @@ export class CacheService implements OnModuleInit {
         SELECT s.*,
           COUNT(*)  OVER (PARTITION BY COMPANY_NAME, PLATFORM)                              AS seg_shoppers,
           NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY value  ASC)          AS ltv_score,
-          NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY orders ASC)          AS freq_score,
+          -- Frequency (order count) is highly tie-prone: large blocks of buyers share the
+          -- same value (1 order, 2 orders, ...), and NTILE splits a tied block across
+          -- deciles by row position, so identical buyers could score differently. Use a
+          -- VALUE-based rank instead: PERCENT_RANK gives every buyer with the same order
+          -- count the same percentile, mapped to a 1-10 bucket (bottom tie group -> 1,
+          -- top -> 10). ltv/aov/recency stay on NTILE — they're near-continuous, so ties
+          -- at a boundary are rare and equal-headcount deciles are fine there.
+          LEAST(10, FLOOR(PERCENT_RANK() OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY orders ASC) * 10) + 1) AS freq_score,
           NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY aov    ASC)          AS aov_score,
           NTILE(10) OVER (PARTITION BY COMPANY_NAME, PLATFORM ORDER BY days_since_last DESC) AS rr_score
         FROM shopper s
