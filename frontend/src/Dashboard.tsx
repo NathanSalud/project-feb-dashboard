@@ -52,6 +52,12 @@ export default function Dashboard() {
   // client rollout (free vs. subscription tier still TBD). Flip to a broader
   // condition (or `true`) when it's approved for tenants.
   const SHOW_PERSONAS = !!user?.isAdmin;
+  // Account Breakdown (account × platform) is admin-only. For a tenant it's
+  // effectively a duplicate of Shop Performance — 164 of 165 account×platform
+  // grains map to exactly one shop, so the two tables show the same rows with
+  // only the label differing. Admins keep it: it's the only cross-tenant view
+  // carrying the Company + Account columns. Tenants default to Shop Performance.
+  const SHOW_ACCOUNT_BREAKDOWN = !!user?.isAdmin;
   const [cCompany, setCCompany]   = useState('all');
   const [cAcc, setCAcc]           = useState('all');
   const [cPlat, setCPlat]         = useState('all');
@@ -66,7 +72,7 @@ export default function Dashboard() {
   // for the admin's all-company payloads, was the source of the date-change lag.
   const [qDateFrom, setQDateFrom] = useState('2023-01-01');
   const [qDateTo, setQDateTo]     = useState(() => new Date().toISOString().slice(0, 10));
-  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>('breakdown');
+  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>(user?.isAdmin ? 'breakdown' : 'shops');
   const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
   const [sortCol, setSortCol] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -603,7 +609,7 @@ export default function Dashboard() {
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {(['breakdown','shops','products','doi'] as const).map(t => (
+          {((SHOW_ACCOUNT_BREAKDOWN ? ['breakdown','shops','products','doi'] : ['shops','products','doi']) as Array<'breakdown'|'shops'|'products'|'doi'>).map(t => (
             <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
               {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
