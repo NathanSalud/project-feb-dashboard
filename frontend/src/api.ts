@@ -90,4 +90,10 @@ export const getDoi = () =>
 export const getPersonas = (period = 'lifetime') =>
   api.get('/dashboard/personas', { params: { period } });
 
+export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string) =>
+  api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand } });
+
+export const getRetention = () =>
+  api.get('/dashboard/retention');
+
 export default api;

@@ -74,7 +74,16 @@ export class DashboardService {
   getPersonas(companyName: string, isAdmin: boolean, period?: string) {
     return this.cache.getPersonas(companyName, isAdmin, period);
   }
-  
+
+  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+    this.validateDates(dateFrom, dateTo);
+    return this.cache.getCancellations(companyName, isAdmin, dateFrom, dateTo);
+  }
+
+  getRetention(companyName: string, isAdmin: boolean) {
+    return this.cache.getRetention(companyName, isAdmin);
+  }
+
   getStatus() {
     return this.cache.getStatus();
   }
