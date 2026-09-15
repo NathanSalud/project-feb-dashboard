@@ -55,6 +55,18 @@ const PERSONA_PERIODS: Record<string, string> = {
 };
 const PERSONA_DEFAULT_PERIOD = 'lifetime';
 
+// ── Order-quality status buckets ─────────────────────────────────────
+// Cancellation/return metrics look at ALL statuses (unlike the revenue
+// queries, which keep only VALID_REVENUE_STATUSES). Kept as SQL fragments.
+const CANCELLED_STATUS_SQL = `'Cancelled','Cancel requested'`;
+const RETURNED_STATUS_SQL  = `'Returned','Return requested','Return in progress'`;
+
+// Retention (repeat purchase) is a buyer-level metric that cannot be summed
+// across segments, so it is precomputed per (company, platform) plus rollups
+// over a fixed trailing window. Not tied to the dashboard date picker.
+const RETENTION_FLOOR_SQL = `f.ORDER_DATE >= DATEADD('month', -12, CURRENT_DATE)`;
+const RETENTION_ALL = '__ALL__'; // sentinel for the company/platform rollup rows
+
 // Sales-by-province (geo) time windows. Same precompute-per-window trick as
 // personas: each window is a small province-level aggregate (NOT daily grain),
 // so caching a handful of them is cheap — this is what makes date-scoped geo
@@ -134,6 +146,8 @@ export class CacheService implements OnModuleInit {
         this.refreshGeo(),
         this.refreshDoi(),
         this.refreshPersonas(),
+        this.refreshCancellations(),
+        this.refreshRetention(),
       ]);
       this.lastRefreshed = new Date();
       this.logger.log(`Cache refreshed successfully at ${this.lastRefreshed.toISOString()}`);
@@ -266,6 +280,88 @@ export class CacheService implements OnModuleInit {
     });
   }
 
+  // Cancellation / return counts by day, per (company, account, platform).
+  // Unlike the revenue queries this reads ALL statuses (no valid-revenue
+  // filter) so cancellations are visible; the onboarding floor + active/'s'
+  // guards still apply for consistency. Date-filterable in the getter.
+  private async refreshCancellations() {
+    const data = await this.snowflake.query(`
+      SELECT
+        a.COMPANY_NAME,
+        a.ACCOUNT_NAME,
+        a.PLATFORM,
+        DATE_TRUNC('DAY', f.ORDER_DATE)                                        AS ORDER_DATE,
+        COUNT(f.ORDER_ITEM_SK)                                                 AS ITEMS,
+        SUM(IFF(f.ITEM_STATUS IN (${CANCELLED_STATUS_SQL}), 1, 0))             AS CANCELLED,
+        SUM(IFF(f.ITEM_STATUS IN (${RETURNED_STATUS_SQL}), 1, 0))              AS RETURNED
+      FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      WHERE f.ORDER_DATE >= '2023-01-01'
+      AND a.IS_ACTIVE = TRUE
+      AND a.ACCOUNT_NAME != 's'
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+    `);
+    this.cache.set('cancellations', data);
+    this.logger.log(`Cancellations cached — ${data.length} rows`);
+  }
+
+  // Builds a repeat-purchase query at a chosen grain. byCompany/byPlatform pick
+  // whether that dimension is a real column or collapsed to the RETENTION_ALL
+  // sentinel — so we can produce (company,platform), (company,ALL), (ALL,platform)
+  // and (ALL,ALL) rollups, each with buyer-order counts computed WITHIN that grain
+  // (repeat rate is not additive, so every rollup must be aggregated directly).
+  private retentionQuery(byCompany: boolean, byPlatform: boolean): string {
+    const co = byCompany ? 'a.COMPANY_NAME' : `'${RETENTION_ALL}'`;
+    const pl = byPlatform ? 'a.PLATFORM' : `'${RETENTION_ALL}'`;
+    return `
+      WITH b AS (
+        SELECT
+          ${co} AS COMPANY_NAME,
+          ${pl} AS PLATFORM,
+          f.BUYER_ID AS SHOPPER,
+          COUNT(DISTINCT f.PLATFORM_ORDER_ID) AS orders,
+          SUM(f.ORIGINAL_PRODUCT_PRICE)       AS gmv
+        FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
+        INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+        WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+          AND ${RETENTION_FLOOR_SQL}
+          AND a.IS_ACTIVE = TRUE
+          AND a.ACCOUNT_NAME != 's'
+          AND f.BUYER_ID IS NOT NULL
+          AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')
+        GROUP BY ${co}, ${pl}, f.BUYER_ID
+      )
+      SELECT
+        COMPANY_NAME,
+        PLATFORM,
+        COUNT(*)                                                         AS BUYERS,
+        SUM(IFF(orders >= 2, 1, 0))                                      AS REPEAT_BUYERS,
+        ROUND(100.0 * SUM(IFF(orders >= 2, 1, 0)) / NULLIF(COUNT(*),0), 1)          AS REPEAT_RATE,
+        ROUND(100.0 * SUM(IFF(orders >= 2, gmv, 0)) / NULLIF(SUM(gmv),0), 1)        AS REPEAT_GMV_SHARE,
+        ROUND(AVG(orders), 2)                                           AS AVG_ORDERS
+      FROM b
+      GROUP BY COMPANY_NAME, PLATFORM
+    `;
+  }
+
+  // Precompute repeat-purchase metrics (trailing 12 mo) at four grains and cache
+  // the union. Warmed in the bounded pool like personas/geo.
+  private async refreshRetention() {
+    const grains: Array<[boolean, boolean]> = [[true, true], [true, false], [false, true], [false, false]];
+    const rows: any[] = [];
+    await this.mapPool(grains, this.WARM_CONCURRENCY, async ([byCompany, byPlatform]) => {
+      try {
+        const part = await this.snowflake.query(this.retentionQuery(byCompany, byPlatform));
+        rows.push(...part);
+      } catch (err) {
+        this.logger.warn(`Retention[c=${byCompany},p=${byPlatform}] skipped: ${(err as Error).message}`);
+      }
+    });
+    this.cache.set('retention', rows);
+    this.logger.log(`Retention cached — ${rows.length} rows`);
+  }
+
   // Pure Snowflake fetchers for time series — no caching here (policy lives in
   // loadWithCache / the getter). SQL copied verbatim from the old
   // refreshTimeSeries; tenant variant adds ONLY `AND a.COMPANY_NAME = ?`.
@@ -279,6 +375,7 @@ export class CacheService implements OnModuleInit {
         COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
         COUNT(f.ORDER_ITEM_SK)                  AS ITEMS,
         ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE,
+        ROUND(SUM(f.FINAL_PRODUCT_PRICE), 2)    AS NMV,
         ROUND(SUM(f.PLATFORM_DISCOUNT), 2)              AS PLATFORM_DISCOUNT,
         ROUND(SUM(f.SELLER_DISCOUNT), 2)                AS SELLER_DISCOUNT,
         ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
@@ -303,6 +400,7 @@ export class CacheService implements OnModuleInit {
         COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
         COUNT(f.ORDER_ITEM_SK)                  AS ITEMS,
         ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE,
+        ROUND(SUM(f.FINAL_PRODUCT_PRICE), 2)    AS NMV,
         ROUND(SUM(f.PLATFORM_DISCOUNT), 2)              AS PLATFORM_DISCOUNT,
         ROUND(SUM(f.SELLER_DISCOUNT), 2)                AS SELLER_DISCOUNT,
         ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
@@ -701,6 +799,22 @@ getDoi(companyName: string, isAdmin: boolean) {
     // Standard tenant isolation by COMPANY_NAME (rows tagged in refreshDoi via the
     // OP_CHN_MAP_V2 crosswalk). Shared/unresolved CUST_IDs have COMPANY_NAME = null.
     return data.filter(r => r.COMPANY_NAME === companyName);
+  }
+
+  // Cancellation / return counts — date-filterable, same tenant model as KPIs.
+  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+    const data = (this.cache.get('cancellations') || []) as any[];
+    return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+  }
+
+  // Repeat-purchase metrics (trailing 12 mo). Rows are pre-aggregated per
+  // (company, platform) with RETENTION_ALL rollup rows. Tenants get only their
+  // own company's rows (incl. their all-platform rollup); admins get everything
+  // including the global RETENTION_ALL rows. The frontend selects the row that
+  // matches the active company/platform filter.
+  getRetention(companyName: string, isAdmin: boolean) {
+    const data = (this.cache.get('retention') || []) as any[];
+    return this.filterCompany(data, companyName, isAdmin);
   }
 
   getStatus() {

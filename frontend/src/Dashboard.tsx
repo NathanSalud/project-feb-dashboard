@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
 import PersonasTab from './PersonasTab';
 import ChangePasswordModal from './ChangePasswordModal';
 import gdecLogo from './assets/gdec-logo.png';
@@ -113,6 +113,16 @@ export default function Dashboard() {
     queryFn: () => getDoi().then(r => r.data),
     enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
   });
+  const { data: cancellations = [] } = useQuery({
+    queryKey: ['cancellations', qDateFrom, qDateTo, cBrand],
+    queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    placeholderData: keepPreviousData,
+  });
+  const { data: retention = [] } = useQuery({
+    queryKey: ['retention'],
+    queryFn: () => getRetention().then(r => r.data),
+    enabled: !!user, // trailing-12mo repeat metrics; company-scoped server-side
+  });
   const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
   // Rows are tagged server-side with COMPANY_NAME/ACCOUNT_NAMES. Tenants filter by the
   // global account selector (cAcc); admins keep the raw CUST_ID dropdown.
@@ -201,6 +211,7 @@ export default function Dashboard() {
     )
     .reduce((acc: any, r: any) => ({
       revenue: (acc.revenue || 0) + Number(r.REVENUE),
+      nmv:     (acc.nmv     || 0) + Number(r.NMV || 0),
       orders:  (acc.orders  || 0) + Number(r.ORDERS),
       items:   (acc.items   || 0) + Number(r.ITEMS),
       pd:      (acc.pd      || 0) + Number(r.PLATFORM_DISCOUNT),
@@ -210,6 +221,7 @@ export default function Dashboard() {
 
   const totals = {
     revenue: tsRevOrd.revenue || 0,
+    nmv:     tsRevOrd.nmv     || 0,
     orders:  tsRevOrd.orders  || 0,
     items:   tsRevOrd.items || 0,
     pd:      tsRevOrd.pd    || 0,
@@ -218,6 +230,31 @@ export default function Dashboard() {
   };
   const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;
   const discRate = totals.revenue > 0 ? (((totals.pd + totals.sd) / totals.revenue) * 100).toFixed(1) : '0.0';
+  const nmvPct   = totals.revenue > 0 ? ((totals.nmv / totals.revenue) * 100).toFixed(1) : '0.0';
+
+  // ── Cancellation rate (date-aware; server already date-filtered) ──
+  const cxAgg = (cancellations as any[])
+    .filter((r: any) =>
+      companyMatch(r) &&
+      (cPlat === 'all' || r.PLATFORM === cPlat) &&
+      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
+      (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
+    )
+    .reduce((a: any, r: any) => ({
+      items:     a.items     + Number(r.ITEMS || 0),
+      cancelled: a.cancelled + Number(r.CANCELLED || 0),
+      returned:  a.returned  + Number(r.RETURNED || 0),
+    }), { items: 0, cancelled: 0, returned: 0 });
+  const cancelRate = cxAgg.items > 0 ? ((cxAgg.cancelled / cxAgg.items) * 100).toFixed(1) : '0.0';
+
+  // ── Repeat purchase (trailing 12 mo; not tied to the date picker) ──
+  // Select the precomputed row matching the active company/platform filter.
+  // Tenants only receive their own company's rows; '__ALL__' is the rollup.
+  const retEffCompany = user?.isAdmin ? (cCompany === 'all' ? '__ALL__' : cCompany) : user?.companyName;
+  const retEffPlatform = cPlat === 'all' ? '__ALL__' : cPlat;
+  const retRow = (retention as any[]).find(
+    (r: any) => r.COMPANY_NAME === retEffCompany && r.PLATFORM === retEffPlatform
+  );
 
   // Time series chart data
   const groupKey = (dateStr: string) => {
@@ -501,12 +538,16 @@ export default function Dashboard() {
 
         {/* KPI CARDS */}
         {sectionLabel('Performance Overview', 'performance-overview')}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px,1fr))', gap: 12, marginBottom: 20 }}>
           {kpiCard('Total GMV',       fmt(totals.revenue), 'Sales Value before Discounts', TEAL)}
+          {kpiCard('Total NMV',       fmt(totals.nmv),     `Net of product discounts · ${nmvPct}% of GMV`, '#14808a')}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
           {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
+          {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
+          {kpiCard('Repeat Purchase Rate', retRow ? retRow.REPEAT_RATE + '%' : '—',
+                   retRow ? `${retRow.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b')}
         </div>
 
         {/* TIME SERIES CHARTS */}

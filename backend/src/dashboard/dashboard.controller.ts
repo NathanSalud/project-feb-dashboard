@@ -95,4 +95,18 @@ export class DashboardController {
       period,
     );
   }
+
+  @Get('cancellations')
+  getCancellations(
+    @Request() req,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.dashboardService.getCancellations(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+  }
+
+  @Get('retention')
+  getRetention(@Request() req) {
+    return this.dashboardService.getRetention(req.user.companyName, req.user.isAdmin);
+  }
 }
