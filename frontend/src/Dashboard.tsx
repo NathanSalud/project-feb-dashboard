@@ -217,7 +217,6 @@ export default function Dashboard() {
     )
     .reduce((acc: any, r: any) => ({
       revenue: (acc.revenue || 0) + Number(r.REVENUE),
-      nmv:     (acc.nmv     || 0) + Number(r.NMV || 0),
       orders:  (acc.orders  || 0) + Number(r.ORDERS),
       items:   (acc.items   || 0) + Number(r.ITEMS),
       pd:      (acc.pd      || 0) + Number(r.PLATFORM_DISCOUNT),
@@ -227,15 +226,24 @@ export default function Dashboard() {
 
   const totals = {
     revenue: tsRevOrd.revenue || 0,
-    nmv:     tsRevOrd.nmv     || 0,
     orders:  tsRevOrd.orders  || 0,
     items:   tsRevOrd.items || 0,
     pd:      tsRevOrd.pd    || 0,
     sd:      tsRevOrd.sd    || 0,
     ship:    tsRevOrd.ship  || 0,
+    // NMV is derived as GMV minus the two PRODUCT discounts (platform + seller),
+    // NOT the raw FINAL_PRODUCT_PRICE column. This is deliberate so GMV, NMV, the
+    // Discount Rate KPI and the Discount Analysis breakdown all reconcile to the
+    // peso from one source (the discount columns). The source's FINAL_PRODUCT_PRICE
+    // differs from GMV−discounts by ~0.13% (a data-quality residual); using it made
+    // NMV% + Discount Rate sum to 100.1%. Shipping-fee discounts are excluded (they
+    // reduce shipping, not merchandise), matching NMV's definition.
+    nmv:     (tsRevOrd.revenue || 0) - (tsRevOrd.pd || 0) - (tsRevOrd.sd || 0),
   };
   const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;
-  const discRate = totals.revenue > 0 ? (((totals.pd + totals.sd) / totals.revenue) * 100).toFixed(1) : '0.0';
+  // Discount Rate is the product-discount give-back, defined off NMV so it is the
+  // exact complement of NMV% (they always sum to 100%).
+  const discRate = totals.revenue > 0 ? (((totals.revenue - totals.nmv) / totals.revenue) * 100).toFixed(1) : '0.0';
   const nmvPct   = totals.revenue > 0 ? ((totals.nmv / totals.revenue) * 100).toFixed(1) : '0.0';
 
   // ── Cancellation rate (date-aware; server already date-filtered) ──
