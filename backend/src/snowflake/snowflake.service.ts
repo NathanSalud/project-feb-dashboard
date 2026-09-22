@@ -15,15 +15,42 @@ export class SnowflakeService implements OnModuleInit {
 
   private connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.connection = snowflake.createConnection({
+      // Common connection params (auth-independent).
+      const base: any = {
         account:   this.config.get<string>('SNOWFLAKE_ACCOUNT'),
         username:  this.config.get<string>('SNOWFLAKE_USERNAME'),
-        password:  this.config.get<string>('SNOWFLAKE_PASSWORD'),
         database:  this.config.get<string>('SNOWFLAKE_DATABASE'),
         schema:    this.config.get<string>('SNOWFLAKE_SCHEMA'),
         warehouse: this.config.get<string>('SNOWFLAKE_WAREHOUSE'),
         role:      this.config.get<string>('SNOWFLAKE_ROLE'),
-      });
+      };
+
+      // Auth: prefer key-pair (JWT) when a private key is configured, else fall
+      // back to password. Snowflake is retiring password-only logins for service
+      // accounts, so PROJ_FEB_USER must move to key-pair. Setting either
+      // SNOWFLAKE_PRIVATE_KEY_PATH (a .p8 file on disk) or SNOWFLAKE_PRIVATE_KEY
+      // (inline PEM) flips this over — no code change, no redeploy of logic.
+      const privateKeyPath   = this.config.get<string>('SNOWFLAKE_PRIVATE_KEY_PATH');
+      const privateKeyInline = this.config.get<string>('SNOWFLAKE_PRIVATE_KEY');
+      const privateKeyPass   = this.config.get<string>('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE');
+
+      let opts: any;
+      if (privateKeyPath || privateKeyInline) {
+        opts = { ...base, authenticator: 'SNOWFLAKE_JWT' };
+        if (privateKeyInline) {
+          // Env vars can't hold real newlines; accept \n-escaped PEM and restore.
+          opts.privateKey = privateKeyInline.replace(/\\n/g, '\n');
+        } else {
+          opts.privateKeyPath = privateKeyPath;
+        }
+        if (privateKeyPass) opts.privateKeyPass = privateKeyPass; // omit for unencrypted keys
+        this.logger.log('Snowflake auth: key-pair (JWT)');
+      } else {
+        opts = { ...base, password: this.config.get<string>('SNOWFLAKE_PASSWORD') };
+        this.logger.log('Snowflake auth: password (legacy — migrate to key-pair)');
+      }
+
+      this.connection = snowflake.createConnection(opts);
 
       this.connection.connect((err) => {
         if (err) {

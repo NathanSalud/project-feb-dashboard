@@ -63,6 +63,15 @@ Consequences to keep in mind:
 
 Not committed. `backend/.env`: `SNOWFLAKE_*` (ACCOUNT, USERNAME, PASSWORD, DATABASE, SCHEMA, WAREHOUSE, ROLE), `JWT_SECRET`, `JWT_EXPIRES_IN`, `PORT`, `ANTHROPIC_API_KEY`, `FRONTEND_URL` (CORS origin). `frontend/.env.local`: `VITE_API_URL` (backend base URL).
 
+Snowflake auth (`SnowflakeService`): key-pair (JWT) is preferred over password when a
+private key is configured. Set **one** of `SNOWFLAKE_PRIVATE_KEY_PATH` (absolute path to a
+PKCS#8 `.p8` file on the host — recommended on EC2) or `SNOWFLAKE_PRIVATE_KEY` (inline PEM,
+`\n`-escaped), plus `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` if the key is encrypted. When neither
+is set it falls back to `SNOWFLAKE_PASSWORD` (legacy). Snowflake is retiring password-only
+service-account logins, so `PROJ_FEB_USER` runs on key-pair — keep the `.p8` off git
+(store outside the repo, `chmod 600`). A user can hold a password AND an RSA key at once, so
+registering the key does not break the running password login (zero-downtime cutover).
+
 ## Deploy notes
 - Frontend deploys to **Vercel** (auto on push to `main`); a TypeScript error in `npm run build` will fail the deploy, so keep the tree type-clean.
 - Backend runs on **EC2**, deployed via **SSM Session Manager**. Deploy steps on the instance: `git pull`, `npm run build`, `pm2 restart project-feb-backend`. (The `Procfile`'s `web: node dist/main.js` is the underlying run command.)
