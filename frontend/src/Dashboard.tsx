@@ -281,23 +281,27 @@ export default function Dashboard() {
     return dateStr.slice(0,7);
   };
 
-  type PerPlat = {revenue:number;orders:number;items:number};
+  type PerPlat = {revenue:number;orders:number;items:number;pd:number;sd:number};
   const chartData = (() => {
-    const map: Record<string, {revenue:number;orders:number;items:number;plat:Record<string,PerPlat>}> = {};
+    const map: Record<string, {revenue:number;orders:number;items:number;pd:number;sd:number;plat:Record<string,PerPlat>}> = {};
     timeSeries.forEach((r: any) => {
       if(!companyMatch(r) || (cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE||r.ORDER_MONTH).slice(0,10);
       const key = groupKey(raw);
-      if(!map[key]) map[key] = {revenue:0,orders:0,items:0,plat:{}};
+      if(!map[key]) map[key] = {revenue:0,orders:0,items:0,pd:0,sd:0,plat:{}};
       const m = map[key];
       m.revenue += Number(r.REVENUE);
       m.orders  += Number(r.ORDERS);
       m.items   += Number(r.ITEMS);
+      m.pd      += Number(r.PLATFORM_DISCOUNT);
+      m.sd      += Number(r.SELLER_DISCOUNT);
       const p = r.PLATFORM;
-      if(!m.plat[p]) m.plat[p] = {revenue:0,orders:0,items:0};
+      if(!m.plat[p]) m.plat[p] = {revenue:0,orders:0,items:0,pd:0,sd:0};
       m.plat[p].revenue += Number(r.REVENUE);
       m.plat[p].orders  += Number(r.ORDERS);
       m.plat[p].items   += Number(r.ITEMS);
+      m.plat[p].pd      += Number(r.PLATFORM_DISCOUNT);
+      m.plat[p].sd      += Number(r.SELLER_DISCOUNT);
     });
     return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>{
       const row: Record<string, any> = {
@@ -307,12 +311,18 @@ export default function Dashboard() {
              : new Date(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
         revenue: d.revenue, orders: d.orders, items: d.items,
         aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
+        // NMV per period mirrors the KPI/tie-out definition: GMV − platform − seller discount.
+        nmv: d.revenue - d.pd - d.sd,
+        // Average Basket Size = units per order (a ratio, so it is never stacked across platforms).
+        abs: d.orders > 0 ? d.items/d.orders : 0,
       };
       for(const [p, pv] of Object.entries(d.plat)) {
         row[`revenue__${p}`] = pv.revenue;
         row[`orders__${p}`]  = pv.orders;
         row[`items__${p}`]   = pv.items;
         row[`aov__${p}`]     = pv.orders > 0 ? Math.round(pv.revenue/pv.orders) : 0;
+        row[`nmv__${p}`]     = pv.revenue - pv.pd - pv.sd;
+        row[`abs__${p}`]     = pv.orders > 0 ? pv.items/pv.orders : 0;
       }
       return row;
     });
@@ -385,6 +395,7 @@ export default function Dashboard() {
 
   const fmt  = (v: number) => v>=1e9?'₱'+(v/1e9).toFixed(1)+'B':v>=1e6?'₱'+(v/1e6).toFixed(1)+'M':v>=1e3?'₱'+(v/1e3).toFixed(0)+'K':'₱'+v.toFixed(0);
   const fmtN = (v: number) => v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'K':v.toLocaleString();
+  const fmtD = (v: number) => (v || 0).toFixed(2);
 
   const exportCSV = (data: any[], filename: string) => {
     if(!data.length) return;
@@ -558,6 +569,7 @@ export default function Dashboard() {
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
           {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
+          {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
           {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
           {kpiCard('Repeat Purchase Rate', retRow ? retRow.REPEAT_RATE + '%' : '—',
@@ -576,10 +588,12 @@ export default function Dashboard() {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {[
-            { title: 'GMV by Month',        key: 'revenue', color: TEAL,      type: 'line', fmt: fmt,  suffix: '' },
-            { title: 'Orders by Month',     key: 'orders',  color: '#22c98a', type: 'bar',  fmt: fmtN, suffix: ' orders' },
-            { title: 'AOV by Month',        key: 'aov',     color: GOLD,      type: 'line', fmt: fmt,  suffix: '' },
-            { title: 'Items Sold by Month', key: 'items',   color: BLUE2,     type: 'bar',  fmt: fmtN, suffix: ' items' },
+            { title: 'GMV by Month',           key: 'revenue', color: TEAL,      type: 'line', fmt: fmt,  suffix: '' },
+            { title: 'NMV by Month',           key: 'nmv',     color: '#14808a', type: 'bar',  fmt: fmt,  suffix: '' },
+            { title: 'Orders by Month',        key: 'orders',  color: '#22c98a', type: 'bar',  fmt: fmtN, suffix: ' orders' },
+            { title: 'Items Sold by Month',    key: 'items',   color: BLUE2,     type: 'bar',  fmt: fmtN, suffix: ' items' },
+            { title: 'AOV by Month',           key: 'aov',     color: GOLD,      type: 'line', fmt: fmt,  suffix: '' },
+            { title: 'Avg Basket Size by Month', key: 'abs',   color: '#0ea5b7', type: 'line', fmt: fmtD, suffix: ' items/order' },
           ].map(({ title, key, color, type, fmt: f, suffix }) => {
             const split = splitPlats.length > 0;
             return (
