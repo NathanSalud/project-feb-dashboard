@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { changePassword } from './api';
+import posthog from './posthog';
 
 const TEAL = '#1a7a8a', WHITE = '#ffffff', BORDER = '#e2e8f0';
 const TEXT1 = '#1a2332', TEXT2 = '#4a5568', TEXT3 = '#94a3b8';
 
 interface Props {
   onClose: () => void;
-  onSignOut: () => void;   // the existing useAuth() logout — reused, not reinvented
+  onSignOut: () => void;
 }
 
 export default function ChangePasswordModal({ onClose, onSignOut }: Props) {
@@ -27,6 +28,7 @@ export default function ChangePasswordModal({ onClose, onSignOut }: Props) {
     setSubmitting(true);
     try {
       await changePassword(currentPassword, newPassword);   // confirm NOT sent
+      posthog.capture('password_changed');
       setSuccess(true);
       setTimeout(() => onSignOut(), 1500);
     } catch (err: any) {

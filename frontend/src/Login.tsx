@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { login as apiLogin } from './api';
 import { useAuth } from './AuthContext';
+import { posthogLog } from './posthog-logger';
+import posthog from './posthog';
 import gdecLogo from './assets/gdec-logo.png';
 
 // Palette mirrors Dashboard.tsx so the login screen matches the app.
@@ -26,7 +28,11 @@ export default function Login() {
     try {
       const res = await apiLogin(username, password);
       login(res.data.access_token, res.data.user);
+      posthog.capture('login_succeeded');
+      posthogLog.loginSucceeded();
     } catch {
+      posthog.capture('login_failed');
+      posthogLog.loginFailed();
       setError('Invalid username or password.');
     } finally {
       setLoading(false);

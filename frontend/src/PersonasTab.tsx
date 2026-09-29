@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, Legend, CartesianGrid,
 } from 'recharts';
 import { getPersonas } from './api';
+import posthog from './posthog';
 
 // Persona time windows. Tiers are recomputed within the selected window server-
 // side (deciles calibrated on that window's buyers); `key` is the API `period`.
@@ -54,7 +55,7 @@ export default function PersonasTab({ platform, company = 'all', isAdmin }: { pl
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 10, color: TEXT3, letterSpacing: '.4px', textTransform: 'uppercase', marginRight: 2 }}>Timeframe</span>
       {PERIODS.map(p => (
-        <button key={p.key} onClick={() => setPeriod(p.key)}
+        <button key={p.key} onClick={() => { setPeriod(p.key); posthog.capture('persona_period_changed', { period: p.key }); }}
           style={{ padding: '4px 10px', borderRadius: 7, border: `1px solid ${period === p.key ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: period === p.key ? 'rgba(26,122,138,0.1)' : WHITE, color: period === p.key ? TEAL : TEXT2 }}>
           {p.label}
         </button>
