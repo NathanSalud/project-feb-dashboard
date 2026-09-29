@@ -1,6 +1,7 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { identifyTenant, resetTracking } from './posthog';
 
 interface User {
   username: string;
@@ -32,6 +33,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.getItem('token')
   );
 
+  // Attribute PostHog analytics to the signed-in user + company. Runs on fresh
+  // login and on reload (when the user is restored from localStorage), so usage
+  // is always tied to a tenant rather than an anonymous visitor.
+  useEffect(() => {
+    if (user) identifyTenant(user);
+  }, [user]);
+
   const login = (newToken: string, newUser: User) => {
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
@@ -40,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    resetTracking();
     queryClient.clear();
     localStorage.removeItem('token');
     localStorage.removeItem('user');
