@@ -9,6 +9,7 @@ import { useAuth } from './AuthContext';
 import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
 import PersonasTab from './PersonasTab';
 import ChangePasswordModal from './ChangePasswordModal';
+import posthog from './posthog';
 import gdecLogo from './assets/gdec-logo.png';
 
 const TEAL   = '#1a7a8a';
@@ -399,10 +400,16 @@ export default function Dashboard() {
 
   const exportCSV = (data: any[], filename: string) => {
     if(!data.length) return;
+    posthog.capture('dashboard_data_exported', { table: activeTab });
     const headers = Object.keys(data[0]).join(',');
     const rows = data.map(r => Object.values(r).map(v => `"${v}"`).join(','));
     const blob = new Blob([[headers,...rows].join('\n'),], {type:'text/csv'});
     const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+  };
+
+  const handleLogout = () => {
+    posthog.capture('dashboard_signed_out');
+    logout();
   };
 
   const generateInsights = async () => {
@@ -515,13 +522,13 @@ export default function Dashboard() {
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '4px 10px' }}>
             <span style={{ fontSize: 10.5, color: TEXT3 }}>From</span>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
+            <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'date_from' }); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
             <span style={{ color: TEXT3 }}>—</span>
             <span style={{ fontSize: 10.5, color: TEXT3 }}>To</span>
-            <input type="date" value={dateTo} onChange={e => { dateToPinned.current = true; setDateTo(e.target.value); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
+            <input type="date" value={dateTo} onChange={e => { dateToPinned.current = true; setDateTo(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'date_to' }); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
           </div>
           {isLoading && <span style={{ fontSize: 11, color: TEAL }}>⟳ Loading...</span>}
-          <button onClick={logout} style={{ padding: '5px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 12, fontFamily: 'inherit', color: '#e85555', background: WHITE, cursor: 'pointer' }}>Sign out</button>
+          <button onClick={handleLogout} style={{ padding: '5px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 12, fontFamily: 'inherit', color: '#e85555', background: WHITE, cursor: 'pointer' }}>Sign out</button>
         </div>
       </header>
 
@@ -581,7 +588,7 @@ export default function Dashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
           <span style={{ fontSize: 10, color: TEXT3, letterSpacing: '.4px', textTransform: 'uppercase' as const, marginRight: 4 }}>Granularity</span>
           {(['day','week','month','quarter','year'] as const).map(g => (
-            <button key={g} onClick={() => setGranularity(g)}
+            <button key={g} onClick={() => { setGranularity(g); posthog.capture('dashboard_granularity_changed', { granularity: g }); }}
               style={{ padding: '4px 10px', borderRadius: 7, border: `1px solid ${granularity===g ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: granularity===g ? `rgba(26,122,138,0.1)` : WHITE, color: granularity===g ? TEAL : TEXT2, textTransform: 'capitalize' as const }}
               title={g !== 'month' ? 'Available in next phase' : ''}>{g}</button>
           ))}
@@ -632,7 +639,7 @@ export default function Dashboard() {
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
           {((SHOW_ACCOUNT_BREAKDOWN ? ['breakdown','shops','products','doi'] : ['shops','products','doi']) as Array<'breakdown'|'shops'|'products'|'doi'>).map(t => (
-            <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
+            <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); posthog.capture('dashboard_tab_selected', { tab: t }); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
               {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
           ))}
@@ -787,7 +794,7 @@ export default function Dashboard() {
               <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Province</div>
               <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' as const }}>
                 {GEO_PERIODS.map(p => (
-                  <button key={p.key} onClick={() => setGeoPeriod(p.key)}
+                  <button key={p.key} onClick={() => { setGeoPeriod(p.key); posthog.capture('dashboard_geo_period_changed', { period: p.key }); }}
                     style={{ padding: '3px 9px', borderRadius: 7, border: `1px solid ${geoPeriod === p.key ? TEAL : BORDER}`, fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer', background: geoPeriod === p.key ? 'rgba(26,122,138,0.1)' : WHITE, color: geoPeriod === p.key ? TEAL : TEXT2 }}>
                     {p.label}
                   </button>
@@ -898,7 +905,7 @@ export default function Dashboard() {
         </main>
       </div>
       {showChangePw && (
-        <ChangePasswordModal onClose={() => setShowChangePw(false)} onSignOut={logout} />
+        <ChangePasswordModal onClose={() => setShowChangePw(false)} onSignOut={handleLogout} />
       )}
     </div>
   );
