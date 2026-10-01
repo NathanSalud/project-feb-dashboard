@@ -371,7 +371,10 @@ export default function Dashboard() {
       if((cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       if(!user?.isAdmin && !user?.accountNames?.includes(r.ACCOUNT_NAME)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE).slice(0,10);
-      const key = groupKey(raw);
+      // Always bucket by month (YYYY-MM). This chart is "Total Discounts by Month"
+      // and lives in Discount Analysis, so it must NOT follow the Trends section's
+      // granularity toggle (that shared state previously re-bucketed this chart).
+      const key = raw.slice(0,7);
       if(!map[key]) map[key] = {pd:0,sd:0,ship:0,sship:0};
       map[key].pd    += Number(r.PLATFORM_DISCOUNT||0);
       map[key].sd    += Number(r.SELLER_DISCOUNT||0);
@@ -379,7 +382,7 @@ export default function Dashboard() {
       map[key].sship += Number(r.SELLER_SHIPPING_DISCOUNT||0);
     });
     return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>({
-      month: granularity === 'month' ? new Date(k+'-01').toLocaleDateString('en-US',{month:'short',year:'2-digit'}) : k,
+      month: new Date(k+'-01').toLocaleDateString('en-US',{month:'short',year:'2-digit'}),
       'Platform Discount': d.pd,
       'Seller Discount':   d.sd,
       'Shipping Discount': d.ship,
