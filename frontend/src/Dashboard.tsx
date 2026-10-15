@@ -8,6 +8,7 @@ import {
 import { useAuth } from './AuthContext';
 import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
 import PersonasTab from './PersonasTab';
+import ComparePanels from './ComparePanels';
 import ChangePasswordModal from './ChangePasswordModal';
 import posthog from './posthog';
 import gdecLogo from './assets/gdec-logo.png';
@@ -619,6 +620,7 @@ export default function Dashboard() {
             {[
               { id: 'performance-overview', label: 'Performance Overview' },
               { id: 'trends',               label: 'Trends' },
+              { id: 'comparison',           label: 'Comparison' },
               { id: 'data-tables',          label: 'Data Tables' },
               { id: 'geographic-platform',  label: 'Geographic & Platform' },
               { id: 'discount-analysis',    label: 'Discount Analysis' },
@@ -723,6 +725,10 @@ export default function Dashboard() {
             );
           })}
         </div>
+
+        {/* SIDE-BY-SIDE COMPARISON (#2) */}
+        {sectionLabel('Comparison', 'comparison')}
+        <ComparePanels user={user} cCompany={cCompany} cAcc={cAcc} cPlat={cPlat} />
 
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
