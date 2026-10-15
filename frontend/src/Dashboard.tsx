@@ -23,7 +23,7 @@ const TEXT2  = '#4a5568';
 const TEXT3  = '#94a3b8';
 
 const PLAT_COLORS: Record<string, string> = {
-  Shopee: '#f05a28', Lazada: '#1a56db', Tiktok: '#ee1d52',
+  Shopee: '#f05a28', Lazada: '#1a56db', Tiktok: '#161823',
 };
 const PIE_COLORS = [TEAL, GOLD, BLUE2, '#22c98a', '#9b6ff0', '#e85555'];
 
@@ -59,28 +59,39 @@ export default function Dashboard() {
   // only the label differing. Admins keep it: it's the only cross-tenant view
   // carrying the Company + Account columns. Tenants default to Shop Performance.
   const SHOW_ACCOUNT_BREAKDOWN = !!user?.isAdmin;
-  const [cCompany, setCCompany]   = useState('all');
-  const [cAcc, setCAcc]           = useState('all');
-  const [cPlat, setCPlat]         = useState('all');
-  const [cBrand, setCBrand]       = useState('all');
-  const [dateFrom, setDateFrom]   = useState('2023-01-01');
-  // Start the end date at today so the initial load never truncates the newest
-  // data; an effect below snaps it down to the latest day actually present.
-  const [dateTo, setDateTo]       = useState(() => new Date().toISOString().slice(0, 10));
-  // Debounced copies of the range that actually drive the data queries. The
-  // pickers update dateFrom/dateTo immediately (responsive UI); qDateFrom/qDateTo
-  // lag ~400ms so dragging the range doesn't fire a burst of fetches — which,
-  // for the admin's all-company payloads, was the source of the date-change lag.
-  const [qDateFrom, setQDateFrom] = useState('2023-01-01');
-  const [qDateTo, setQDateTo]     = useState(() => new Date().toISOString().slice(0, 10));
-  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>(user?.isAdmin ? 'breakdown' : 'shops');
-  const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>('month');
+
+  // Filter memory (#3): restore each user's last-used filters from localStorage
+  // on mount and persist them on change, so logging back in returns to the same
+  // view. Keyed per username so accounts don't inherit each other's filters.
+  const FILTERS_KEY = `gdec_filters_${user?.username || 'anon'}`;
+  const savedFilters: any = (() => { try { return JSON.parse(localStorage.getItem(FILTERS_KEY) || '{}'); } catch { return {}; } })();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const [cCompany, setCCompany]   = useState<string>(savedFilters.cCompany ?? 'all');
+  const [cAcc, setCAcc]           = useState<string>(savedFilters.cAcc ?? 'all');
+  const [cPlat, setCPlat]         = useState<string>(savedFilters.cPlat ?? 'all');
+  const [cBrand, setCBrand]       = useState<string>(savedFilters.cBrand ?? 'all');
+  const [dateFrom, setDateFrom]   = useState<string>(savedFilters.dateFrom ?? '2023-01-01');
+  // End date starts at the saved value, else today; the snap effect below only
+  // moves it to the latest day present when there is NO saved range.
+  const [dateTo, setDateTo]       = useState<string>(savedFilters.dateTo ?? todayStr);
+  // Debounced copies of the range that actually drive the data queries (~400ms
+  // lag) so dragging the range doesn't fire a burst of fetches.
+  const [qDateFrom, setQDateFrom] = useState<string>(savedFilters.dateFrom ?? '2023-01-01');
+  const [qDateTo, setQDateTo]     = useState<string>(savedFilters.dateTo ?? todayStr);
+  const [activeTab, setActiveTab] = useState<'breakdown'|'shops'|'products'|'doi'>(
+    (savedFilters.activeTab && (user?.isAdmin || savedFilters.activeTab !== 'breakdown'))
+      ? savedFilters.activeTab
+      : (user?.isAdmin ? 'breakdown' : 'shops'));
+  const [granularity, setGranularity] = useState<'day'|'week'|'month'|'quarter'|'year'>(savedFilters.granularity ?? 'month');
   const [sortCol, setSortCol] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [insights, setInsights]   = useState<string>('');
   const [insightLoading, setInsightLoading] = useState(false);
   const [doiCustomer, setDoiCustomer] = useState('all');
-  const [geoPeriod, setGeoPeriod] = useState('overall'); // Sales-by-Province time window
+  const [doiSearch, setDoiSearch] = useState('');              // Inventory DOI search (#10)
+  const [geoPeriod, setGeoPeriod] = useState<string>(savedFilters.geoPeriod ?? 'overall'); // Sales-by-Province time window
+  const [geoShowAll, setGeoShowAll] = useState(false);          // Province top-10 vs view-all (#8)
   const [showChangePw, setShowChangePw] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
@@ -133,10 +144,14 @@ export default function Dashboard() {
   const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
   // Rows are tagged server-side with COMPANY_NAME/ACCOUNT_NAMES. Tenants filter by the
   // global account selector (cAcc); admins keep the raw CUST_ID dropdown.
+  const doiSearchLc = doiSearch.trim().toLowerCase();
   const doiFiltered = (doiRaw as any[]).filter(r =>
     (user?.isAdmin ? (doiCustomer === 'all' || r.CUSTOMER_ID === doiCustomer) : true) &&
     (cCompany === 'all' || r.COMPANY_NAME === cCompany) &&
-    (cAcc === 'all' || (r.ACCOUNT_NAMES || []).includes(cAcc))
+    (cAcc === 'all' || (r.ACCOUNT_NAMES || []).includes(cAcc)) &&
+    (!doiSearchLc ||
+      String(r.PRODUCT_NAME || '').toLowerCase().includes(doiSearchLc) ||
+      String(r.PRODUCT_SKU  || '').toLowerCase().includes(doiSearchLc))
   );
 
   const isLoading = kFetch || tFetch || sFetch || pFetch || dFetch;
@@ -153,7 +168,8 @@ export default function Dashboard() {
   // On first data load, snap the end date to the latest day present in the data,
   // so the default range always ends on the newest (day-1) data instead of a
   // stale hardcoded date. Runs once; a manual edit to the end date pins it.
-  const dateToPinned = useRef(false);
+  // Pre-pin when a saved end date was restored, so the snap below doesn't override it.
+  const dateToPinned = useRef(!!savedFilters.dateTo);
   useEffect(() => {
     if (dateToPinned.current || !timeSeries.length) return;
     const latest = (timeSeries as any[]).reduce((mx: string, r: any) => {
@@ -164,6 +180,16 @@ export default function Dashboard() {
     }, '');
     if (latest) { setDateTo(latest); dateToPinned.current = true; }
   }, [timeSeries]);
+
+  // Persist the active filters so the next login restores them (#3).
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILTERS_KEY, JSON.stringify({
+        cCompany, cAcc, cPlat, cBrand, dateFrom, dateTo, granularity, geoPeriod, activeTab,
+      }));
+    } catch { /* storage unavailable (private mode) — skip */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cCompany, cAcc, cPlat, cBrand, dateFrom, dateTo, granularity, geoPeriod, activeTab]);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -346,7 +372,7 @@ export default function Dashboard() {
   })();
 
   // Geo data
-  const geoData = (() => {
+  const geoSorted = (() => {
     const filtered = geoRaw.filter((r: any) =>
       companyMatch(r) &&
       (cPlat === 'all' || r.PLATFORM === cPlat) &&
@@ -359,9 +385,10 @@ export default function Dashboard() {
     });
     return Object.entries(map)
       .sort((a,b) => b[1]-a[1])
-      .slice(0,15)
       .map(([name, value]) => ({name, value}));
   })();
+  // Top 10 by default; "View all" (#8) expands to every province.
+  const geoData = geoShowAll ? geoSorted : geoSorted.slice(0, 10);
 
   // Discount time series
   const discChartData = (() => {
@@ -409,6 +436,14 @@ export default function Dashboard() {
     const blob = new Blob([[headers,...rows].join('\n'),], {type:'text/csv'});
     const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
   };
+
+  // Compact CSV-export button for individual chart cards (#9).
+  const miniExport = (data: any[], filename: string) => (
+    <button onClick={() => exportCSV(data, filename)} title="Download chart data (CSV)"
+      style={{ flexShrink: 0, border: `1px solid ${BORDER}`, background: WHITE, color: TEXT3, borderRadius: 6, fontSize: 10, padding: '2px 7px', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' as const }}>
+      ⬇ CSV
+    </button>
+  );
 
   const handleLogout = () => {
     posthog.capture('dashboard_signed_out');
@@ -608,7 +643,18 @@ export default function Dashboard() {
             const split = splitPlats.length > 0;
             return (
             <div key={key} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>{title}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>{title}</div>
+                {miniExport(
+                  chartData.map((d: any) => {
+                    const o: any = { month: d.month };
+                    if (split) splitPlats.forEach(pp => { o[pp] = d[`${key}__${pp}`]; });
+                    else o[key] = d[key];
+                    return o;
+                  }),
+                  `${title.replace(/\s+/g, '_').toLowerCase()}.csv`,
+                )}
+              </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Filtered period</div>
               <ResponsiveContainer width="100%" height={160}>
                 {type === 'line' ? (
@@ -659,6 +705,11 @@ export default function Dashboard() {
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {activeTab === 'doi' && (
+              <input value={doiSearch} onChange={e => setDoiSearch(e.target.value)}
+                placeholder="Search product or SKU…"
+                style={{ padding: '5px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: TEXT1, background: WHITE, width: 200, outline: 'none' }} />
+            )}
             {activeTab === 'doi' && user?.isAdmin && (
   <select value={doiCustomer} onChange={e => setDoiCustomer(e.target.value)}
     style={{ marginRight: 8, padding: '5px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: TEXT2, background: WHITE, cursor: 'pointer' }}>
@@ -780,7 +831,10 @@ export default function Dashboard() {
         {sectionLabel('Geographic & Platform Distribution', 'geographic-platform')}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)', gap: 12, marginBottom: 20 }}>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Platform</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Sales by Platform</div>
+              {miniExport(platPie, 'sales_by_platform.csv')}
+            </div>
             <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>GMV share · filtered period</div>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
@@ -802,10 +856,15 @@ export default function Dashboard() {
                     {p.label}
                   </button>
                 ))}
+                <button onClick={() => setGeoShowAll(v => !v)}
+                  style={{ padding: '3px 9px', borderRadius: 7, border: `1px solid ${geoShowAll ? TEAL : BORDER}`, fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer', background: geoShowAll ? 'rgba(26,122,138,0.1)' : WHITE, color: geoShowAll ? TEAL : TEXT2 }}>
+                  {geoShowAll ? 'Top 10' : 'View all'}
+                </button>
+                {miniExport(geoSorted, 'sales_by_province.csv')}
               </div>
             </div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Top 15 provinces by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
-            <ResponsiveContainer width="100%" height={220}>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
+            <ResponsiveContainer width="100%" height={geoShowAll ? Math.max(220, geoData.length * 20) : 220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => fmt(v)} />
@@ -835,7 +894,10 @@ export default function Dashboard() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)', gap: 12, marginBottom: 20 }}>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Discount by Type</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Discount by Type</div>
+              {miniExport(discPie, 'discount_by_type.csv')}
+            </div>
             <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Share of total discount · filtered period</div>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
@@ -848,7 +910,10 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Total Discounts by Month</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: TEXT1, marginBottom: 2 }}>Total Discounts by Month</div>
+              {miniExport(discChartData, 'total_discounts_by_month.csv')}
+            </div>
             <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Stacked by discount type · filtered period</div>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={discChartData}>
