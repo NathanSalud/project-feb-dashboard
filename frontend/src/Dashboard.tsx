@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProducts, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
 import PersonasTab from './PersonasTab';
 import ChangePasswordModal from './ChangePasswordModal';
 import posthog from './posthog';
@@ -110,12 +110,15 @@ export default function Dashboard() {
     placeholderData: keepPreviousData,
   });
   const shops = shopsRes?.data ?? [];
-  const { data: productsRes, isFetching: pFetch } = useQuery({
-    queryKey: ['products', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getProducts(qDateFrom, qDateTo, cBrand).then(r => r.data),
+  // Top Products is now date-aware + cross-platform merged (#6): the server ranks
+  // within the active date range and platform/account/company scope, so the result
+  // is already filtered — no client-side re-filter needed, and it tracks the
+  // scorecard date range the same way the trend charts do.
+  const { data: products = [], isFetching: pFetch } = useQuery({
+    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany],
+    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany).then(r => r.data),
     placeholderData: keepPreviousData,
   });
-  const products = productsRes?.data ?? [];
   const { data: geoRaw = [] } = useQuery({
     queryKey: ['geo', geoPeriod],
     queryFn: () => getGeo(geoPeriod).then(r => r.data),
@@ -227,13 +230,6 @@ export default function Dashboard() {
   // access boundary remains the accountNames / isAdmin check below.
   const companyMatch = (r: any) => cCompany === 'all' || r.COMPANY_NAME === cCompany;
 
-  const filteredKpis = kpis.filter((k: any) =>
-    companyMatch(k) &&
-    (cPlat === 'all' || k.PLATFORM === cPlat) &&
-    (cAcc  === 'all' || k.ACCOUNT_NAME === cAcc) &&
-    (user?.isAdmin || user?.accountNames?.includes(k.ACCOUNT_NAME))
-  );
-
   // KPI totals from time series (date-aware)
   const tsRevOrd = timeSeries
     .filter((r: any) =>
@@ -243,35 +239,38 @@ export default function Dashboard() {
       (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
     )
     .reduce((acc: any, r: any) => ({
-      revenue: (acc.revenue || 0) + Number(r.REVENUE),
-      orders:  (acc.orders  || 0) + Number(r.ORDERS),
-      items:   (acc.items   || 0) + Number(r.ITEMS),
-      pd:      (acc.pd      || 0) + Number(r.PLATFORM_DISCOUNT),
-      sd:      (acc.sd      || 0) + Number(r.SELLER_DISCOUNT),
-      ship:    (acc.ship    || 0) + Number(r.SHIPPING_DISCOUNT),
+      revenue:    (acc.revenue    || 0) + Number(r.REVENUE),        // gross GMV (incl. cancelled)
+      revValid:   (acc.revValid   || 0) + Number(r.REVENUE_VALID),  // valid-only GMV (NMV/discount base)
+      orders:     (acc.orders     || 0) + Number(r.ORDERS),
+      items:      (acc.items      || 0) + Number(r.ITEMS),
+      pd:         (acc.pd         || 0) + Number(r.PLATFORM_DISCOUNT),
+      sd:         (acc.sd         || 0) + Number(r.SELLER_DISCOUNT),
+      ship:       (acc.ship       || 0) + Number(r.SHIPPING_DISCOUNT),
     }), {});
 
   const totals = {
-    revenue: tsRevOrd.revenue || 0,
-    orders:  tsRevOrd.orders  || 0,
-    items:   tsRevOrd.items || 0,
-    pd:      tsRevOrd.pd    || 0,
-    sd:      tsRevOrd.sd    || 0,
-    ship:    tsRevOrd.ship  || 0,
-    // NMV is derived as GMV minus the two PRODUCT discounts (platform + seller),
-    // NOT the raw FINAL_PRODUCT_PRICE column. This is deliberate so GMV, NMV, the
-    // Discount Rate KPI and the Discount Analysis breakdown all reconcile to the
-    // peso from one source (the discount columns). The source's FINAL_PRODUCT_PRICE
-    // differs from GMV−discounts by ~0.13% (a data-quality residual); using it made
-    // NMV% + Discount Rate sum to 100.1%. Shipping-fee discounts are excluded (they
-    // reduce shipping, not merchandise), matching NMV's definition.
-    nmv:     (tsRevOrd.revenue || 0) - (tsRevOrd.pd || 0) - (tsRevOrd.sd || 0),
+    // GMV is gross — it now INCLUDES cancelled orders (decision Oct 2026). NMV,
+    // discounts, orders and items stay net of cancellations (valid statuses only),
+    // so NMV/Discount reconciliation runs off REVENUE_VALID, not gross GMV.
+    revenue:  tsRevOrd.revenue  || 0,   // gross GMV (incl. cancelled)
+    revValid: tsRevOrd.revValid || 0,   // valid-only GMV (base for NMV / discount rate)
+    orders:   tsRevOrd.orders   || 0,
+    items:    tsRevOrd.items    || 0,
+    pd:       tsRevOrd.pd        || 0,
+    sd:       tsRevOrd.sd        || 0,
+    ship:     tsRevOrd.ship      || 0,
+    // NMV = valid GMV − the two PRODUCT discounts (platform + seller). Built off
+    // REVENUE_VALID (not gross GMV) so NMV, Discount Rate and the Discount Analysis
+    // breakdown all still reconcile to the peso on the valid-order base. Shipping-fee
+    // discounts are excluded (they reduce shipping, not merchandise).
+    nmv:      (tsRevOrd.revValid || 0) - (tsRevOrd.pd || 0) - (tsRevOrd.sd || 0),
   };
-  const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;
-  // Discount Rate is the product-discount give-back, defined off NMV so it is the
-  // exact complement of NMV% (they always sum to 100%).
-  const discRate = totals.revenue > 0 ? (((totals.revenue - totals.nmv) / totals.revenue) * 100).toFixed(1) : '0.0';
-  const nmvPct   = totals.revenue > 0 ? ((totals.nmv / totals.revenue) * 100).toFixed(1) : '0.0';
+  const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;  // gross GMV ÷ valid orders
+  // Discount Rate and NMV% are defined on the VALID GMV base (where the discounts
+  // and NMV live), so they stay exact complements that sum to 100% — unaffected by
+  // the cancelled orders now in gross GMV.
+  const discRate = totals.revValid > 0 ? (((totals.revValid - totals.nmv) / totals.revValid) * 100).toFixed(1) : '0.0';
+  const nmvPct   = totals.revValid > 0 ? ((totals.nmv / totals.revValid) * 100).toFixed(1) : '0.0';
 
   // ── Cancellation rate (date-aware; server already date-filtered) ──
   const cxAgg = (cancellations as any[])
@@ -292,9 +291,10 @@ export default function Dashboard() {
   // Select the precomputed row matching the active company/platform filter.
   // Tenants only receive their own company's rows; '__ALL__' is the rollup.
   const retEffCompany = user?.isAdmin ? (cCompany === 'all' ? '__ALL__' : cCompany) : user?.companyName;
+  const retEffAccount = cAcc === 'all' ? '__ALL__' : cAcc;
   const retEffPlatform = cPlat === 'all' ? '__ALL__' : cPlat;
   const retRow = (retention as any[]).find(
-    (r: any) => r.COMPANY_NAME === retEffCompany && r.PLATFORM === retEffPlatform
+    (r: any) => r.COMPANY_NAME === retEffCompany && r.ACCOUNT_NAME === retEffAccount && r.PLATFORM === retEffPlatform
   );
 
   // Time series chart data
@@ -308,27 +308,29 @@ export default function Dashboard() {
     return dateStr.slice(0,7);
   };
 
-  type PerPlat = {revenue:number;orders:number;items:number;pd:number;sd:number};
+  type PerPlat = {revenue:number;revValid:number;orders:number;items:number;pd:number;sd:number};
   const chartData = (() => {
-    const map: Record<string, {revenue:number;orders:number;items:number;pd:number;sd:number;plat:Record<string,PerPlat>}> = {};
+    const map: Record<string, {revenue:number;revValid:number;orders:number;items:number;pd:number;sd:number;plat:Record<string,PerPlat>}> = {};
     timeSeries.forEach((r: any) => {
       if(!companyMatch(r) || (cPlat !== 'all' && r.PLATFORM !== cPlat) || (cAcc !== 'all' && r.ACCOUNT_NAME !== cAcc)) return;
       const raw = r.ORDER_DATE instanceof Date ? r.ORDER_DATE.toISOString().slice(0,10) : String(r.ORDER_DATE||r.ORDER_MONTH).slice(0,10);
       const key = groupKey(raw);
-      if(!map[key]) map[key] = {revenue:0,orders:0,items:0,pd:0,sd:0,plat:{}};
+      if(!map[key]) map[key] = {revenue:0,revValid:0,orders:0,items:0,pd:0,sd:0,plat:{}};
       const m = map[key];
-      m.revenue += Number(r.REVENUE);
-      m.orders  += Number(r.ORDERS);
-      m.items   += Number(r.ITEMS);
-      m.pd      += Number(r.PLATFORM_DISCOUNT);
-      m.sd      += Number(r.SELLER_DISCOUNT);
+      m.revenue  += Number(r.REVENUE);
+      m.revValid += Number(r.REVENUE_VALID);
+      m.orders   += Number(r.ORDERS);
+      m.items    += Number(r.ITEMS);
+      m.pd       += Number(r.PLATFORM_DISCOUNT);
+      m.sd       += Number(r.SELLER_DISCOUNT);
       const p = r.PLATFORM;
-      if(!m.plat[p]) m.plat[p] = {revenue:0,orders:0,items:0,pd:0,sd:0};
-      m.plat[p].revenue += Number(r.REVENUE);
-      m.plat[p].orders  += Number(r.ORDERS);
-      m.plat[p].items   += Number(r.ITEMS);
-      m.plat[p].pd      += Number(r.PLATFORM_DISCOUNT);
-      m.plat[p].sd      += Number(r.SELLER_DISCOUNT);
+      if(!m.plat[p]) m.plat[p] = {revenue:0,revValid:0,orders:0,items:0,pd:0,sd:0};
+      m.plat[p].revenue  += Number(r.REVENUE);
+      m.plat[p].revValid += Number(r.REVENUE_VALID);
+      m.plat[p].orders   += Number(r.ORDERS);
+      m.plat[p].items    += Number(r.ITEMS);
+      m.plat[p].pd       += Number(r.PLATFORM_DISCOUNT);
+      m.plat[p].sd       += Number(r.SELLER_DISCOUNT);
     });
     return Object.entries(map).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,d])=>{
       const row: Record<string, any> = {
@@ -336,10 +338,11 @@ export default function Dashboard() {
              : granularity === 'year'  ? k
              : granularity === 'quarter' ? k
              : new Date(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
+        // revenue = gross GMV (incl. cancelled); aov uses it over valid orders.
         revenue: d.revenue, orders: d.orders, items: d.items,
         aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
-        // NMV per period mirrors the KPI/tie-out definition: GMV − platform − seller discount.
-        nmv: d.revenue - d.pd - d.sd,
+        // NMV per period = valid GMV − platform − seller discount (net of cancellations).
+        nmv: d.revValid - d.pd - d.sd,
         // Average Basket Size = units per order (a ratio, so it is never stacked across platforms).
         abs: d.orders > 0 ? d.items/d.orders : 0,
       };
@@ -348,7 +351,7 @@ export default function Dashboard() {
         row[`orders__${p}`]  = pv.orders;
         row[`items__${p}`]   = pv.items;
         row[`aov__${p}`]     = pv.orders > 0 ? Math.round(pv.revenue/pv.orders) : 0;
-        row[`nmv__${p}`]     = pv.revenue - pv.pd - pv.sd;
+        row[`nmv__${p}`]     = pv.revValid - pv.pd - pv.sd;
         row[`abs__${p}`]     = pv.orders > 0 ? pv.items/pv.orders : 0;
       }
       return row;
@@ -362,13 +365,52 @@ export default function Dashboard() {
     ? ORDERED_PLATS.filter(p => chartData.some((row: any) => row[`revenue__${p}`] != null))
     : [];
 
-  // Sales by platform pie
+  // ── Date-aware table/pie source ──────────────────────────────────
+  // The Account Breakdown table, Shop Performance table and Sales-by-Platform pie
+  // are all derived from the SAME date-aware timeseries rows that feed the
+  // scorecards, aggregated to (company, account, platform). This is what fixes the
+  // scorecard-vs-table mismatch (#1/#5/#11): the tables now respect the date picker
+  // because they share the scorecards' source and date filter. REVENUE is gross GMV.
+  const tsFilteredRows = (timeSeries as any[]).filter((r: any) =>
+    companyMatch(r) &&
+    (cPlat === 'all' || r.PLATFORM === cPlat) &&
+    (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
+    (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
+  );
+  const breakdownRows = (() => {
+    const map: Record<string, any> = {};
+    tsFilteredRows.forEach((r: any) => {
+      const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}`;
+      if (!map[key]) map[key] = { COMPANY_NAME: r.COMPANY_NAME, ACCOUNT_NAME: r.ACCOUNT_NAME, PLATFORM: r.PLATFORM, ORDERS: 0, ITEMS: 0, REVENUE: 0 };
+      map[key].ORDERS  += Number(r.ORDERS);
+      map[key].ITEMS   += Number(r.ITEMS);
+      map[key].REVENUE += Number(r.REVENUE);
+    });
+    return Object.values(map).sort((a: any, b: any) => b.REVENUE - a.REVENUE);
+  })();
+  // Shop Performance = the account/platform aggregation above, labelled with shop
+  // name/ID from the shops dimension (reused only as a lookup now; its metrics are
+  // lifetime and no longer displayed).
+  const shopLookup: Record<string, any> = {};
+  (shops as any[]).forEach((s: any) => { shopLookup[`${s.COMPANY_NAME}|${s.ACCOUNT_NAME}|${s.PLATFORM}`] = s; });
+  const shopRows = breakdownRows.map((r: any) => {
+    const sl = shopLookup[`${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}`] || {};
+    return {
+      SHOP_NAME: sl.SHOP_NAME ?? r.ACCOUNT_NAME,
+      PLATFORM:  r.PLATFORM,
+      SHOP_ID:   sl.SHOP_ID ?? '—',
+      ORDERS:    r.ORDERS,
+      ITEMS:     r.ITEMS,
+      AOV:       r.ORDERS > 0 ? r.REVENUE / r.ORDERS : 0,
+      REVENUE:   r.REVENUE,
+    };
+  });
+
+  // Sales by platform pie — date-aware (gross GMV share over the filtered period).
   const platPie = (() => {
     const map: Record<string, number> = {};
-    filteredKpis.forEach((k: any) => {
-      map[k.PLATFORM] = (map[k.PLATFORM]||0) + Number(k.REVENUE);
-    });
-    return Object.entries(map).map(([name, value]) => ({name, value}));
+    tsFilteredRows.forEach((r: any) => { map[r.PLATFORM] = (map[r.PLATFORM] || 0) + Number(r.REVENUE); });
+    return Object.entries(map).map(([name, value]) => ({ name, value }));
   })();
 
   // Geo data
@@ -486,8 +528,6 @@ export default function Dashboard() {
   }
 };
 
-  const filteredShops    = shops.filter((s: any) => companyMatch(s)&&(cPlat==='all'||s.PLATFORM===cPlat)&&(cAcc==='all'||s.ACCOUNT_NAME===cAcc));
-  const filteredProducts = products.filter((p: any) => companyMatch(p)&&(cPlat==='all'||p.PLATFORM===cPlat)&&(cAcc==='all'||p.ACCOUNT_NAME===cAcc));
 
   const ttStyle = { backgroundColor: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT1, fontSize: 11 };
 
@@ -609,11 +649,11 @@ export default function Dashboard() {
         {/* KPI CARDS */}
         {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px,1fr))', gap: 12, marginBottom: 20 }}>
-          {kpiCard('Total GMV',       fmt(totals.revenue), 'Sales Value before Discounts', TEAL)}
-          {kpiCard('Total NMV',       fmt(totals.nmv),     `Net of product discounts · ${nmvPct}% of GMV`, '#14808a')}
-          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders',                   GOLD)}
+          {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL)}
+          {kpiCard('Total NMV',       fmt(totals.nmv),     `Net of discounts & cancellations · ${nmvPct}% of valid GMV`, '#14808a')}
+          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
-          {kpiCard('Items Sold',      fmtN(totals.items),  'Order line items',                         '#22c98a')}
+          {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a')}
           {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
           {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
@@ -716,7 +756,7 @@ export default function Dashboard() {
     <option value="all">All customers</option>
     {doiCustomers.map(c => <option key={c} value={c}>{c}</option>)}
   </select>
-)}<button onClick={() => exportCSV(activeTab==='breakdown'?filteredKpis:activeTab==='shops'?filteredShops:activeTab==='products'?filteredProducts:doiFiltered, `${activeTab}.csv`)}
+)}<button onClick={() => exportCSV(activeTab==='breakdown'?breakdownRows:activeTab==='shops'?shopRows:activeTab==='products'?products:doiFiltered, `${activeTab}.csv`)}
               style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: '#22c98a', background: WHITE, cursor: 'pointer' }}>
               ⬇ Export CSV
             </button>
@@ -734,7 +774,7 @@ export default function Dashboard() {
                   <th style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'right' as const }}>GMV</th>
                 </tr></thead>
                 <tbody>
-                  {filteredKpis.map((k: any, i: number) => (
+                  {breakdownRows.map((k: any, i: number) => (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
                       {user?.isAdmin && <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontWeight: 500 }}>{k.COMPANY_NAME}</td>}
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2 }}>{k.ACCOUNT_NAME}</td>
@@ -757,7 +797,7 @@ export default function Dashboard() {
                   ))}
                 </tr></thead>
                 <tbody>
-                  {filteredShops.map((s: any, i: number) => (
+                  {shopRows.map((s: any, i: number) => (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontWeight: 500 }}>{s.SHOP_NAME}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}><span style={{ background: `${PLAT_COLORS[s.PLATFORM]||TEAL}18`, color: PLAT_COLORS[s.PLATFORM]||TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{s.PLATFORM}</span></td>
@@ -779,16 +819,21 @@ export default function Dashboard() {
                   ))}
                 </tr></thead>
                 <tbody>
-                  {filteredProducts.map((p: any, i: number) => (
+                  {(products as any[]).map((p: any, i: number) => {
+                    const multi = Number(p.PLATFORM_COUNT) > 1;
+                    return (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{p.PRODUCT_NAME}</td>
-                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}><span style={{ background: `${PLAT_COLORS[p.PLATFORM]||TEAL}18`, color: PLAT_COLORS[p.PLATFORM]||TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{p.PLATFORM}</span></td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}>{multi
+                        ? <span title={`Combined across ${p.PLATFORM_COUNT} platforms`} style={{ background: `${TEXT3}18`, color: TEXT2, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>Multi ({p.PLATFORM_COUNT})</span>
+                        : <span style={{ background: `${PLAT_COLORS[p.PLATFORM]||TEAL}18`, color: PLAT_COLORS[p.PLATFORM]||TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{p.PLATFORM}</span>}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmtN(Number(p.ORDERS))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmtN(Number(p.UNITS))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmt(Number(p.ASP))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const, fontWeight: 600 }}>{fmt(Number(p.REVENUE))}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
@@ -880,9 +925,9 @@ export default function Dashboard() {
         {sectionLabel('Discount Analysis', 'discount-analysis')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Platform Discount', value: fmt(totals.pd),         sub: `${totals.revenue>0?((totals.pd/totals.revenue)*100).toFixed(1):0}% of GMV`, color: TEAL },
-            { label: 'Seller Discount',   value: fmt(totals.sd),         sub: `${totals.revenue>0?((totals.sd/totals.revenue)*100).toFixed(1):0}% of GMV`, color: GOLD },
-            { label: 'Shipping Discount', value: fmt(totals.ship),       sub: `${totals.revenue>0?((totals.ship/totals.revenue)*100).toFixed(1):0}% of GMV`, color: BLUE2 },
+            { label: 'Platform Discount', value: fmt(totals.pd),         sub: `${totals.revValid>0?((totals.pd/totals.revValid)*100).toFixed(1):0}% of valid GMV`, color: TEAL },
+            { label: 'Seller Discount',   value: fmt(totals.sd),         sub: `${totals.revValid>0?((totals.sd/totals.revValid)*100).toFixed(1):0}% of valid GMV`, color: GOLD },
+            { label: 'Shipping Discount', value: fmt(totals.ship),       sub: `${totals.revValid>0?((totals.ship/totals.revValid)*100).toFixed(1):0}% of valid GMV`, color: BLUE2 },
           ].map(({ label, value, sub, color }) => (
             <div key={label} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '14px 18px', borderLeft: `4px solid ${color}`, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
               <div style={{ fontSize: 10, letterSpacing: '.5px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 8 }}>{label}</div>
@@ -968,7 +1013,7 @@ export default function Dashboard() {
         )}
 
         <div style={{ fontSize: 10, color: TEXT3, textAlign: 'center' as const, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
-          Source: GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS · Active accounts · GMV: ORIGINAL_PRODUCT_PRICE · Geographic data: all time 2023 onwards
+          Source: GDEC_DATAMART.GOLD_SCHEMA.FACT_PLATFORM_ORDER_ITEMS · Active accounts · GMV: gross ORIGINAL_PRODUCT_PRICE incl. cancelled orders · NMV, orders & units: valid orders only · Geographic data: all time 2023 onwards
         </div>
         </main>
       </div>

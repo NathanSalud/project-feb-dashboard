@@ -55,6 +55,22 @@ export class DashboardController {
     );
   }
 
+  // Date-aware, cross-platform-merged Top Products (#6). Server-side filters mirror
+  // the dashboard selectors so the table always matches the scorecards' date range.
+  @Get('products-ranked')
+  getProductsRanked(
+    @Request() req,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('platform') platform?: string,
+    @Query('account') account?: string,
+    @Query('company') company?: string,
+  ) {
+    return this.dashboardService.getProductsRanked(req.user.companyName, req.user.isAdmin, {
+      dateFrom, dateTo, platform, account, company,
+    });
+  }
+
   @Get('accounts')
   getAccounts() {
     return this.dashboardService.getAccounts();

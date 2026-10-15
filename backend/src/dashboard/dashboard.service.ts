@@ -54,6 +54,14 @@ export class DashboardService {
     return { data: paginated, total, limit, offset: offset || 0 };
   }
 
+  async getProductsRanked(
+    companyName: string, isAdmin: boolean,
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string },
+  ) {
+    this.validateDates(opts.dateFrom, opts.dateTo);
+    return this.cache.getProductsRanked(companyName, isAdmin, opts);
+  }
+
   getAccounts() {
     return this.cache.getAccounts();
   }

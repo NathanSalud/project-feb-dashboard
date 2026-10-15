@@ -14,6 +14,20 @@ const VALID_REVENUE_STATUSES = ['Completed', 'Shipped', 'Delivered', 'Ready to S
 // Pre-rendered SQL fragment, e.g. "'Completed','Shipped','Delivered','Ready to Ship'"
 const VALID_REVENUE_STATUS_SQL = VALID_REVENUE_STATUSES.map(s => `'${s}'`).join(',');
 
+// GMV status scope (decision, Oct 2026): GMV = gross merchandise value of orders
+// PLACED, so it INCLUDES cancelled orders. NMV, Orders, Items, discounts and the
+// ASP/AOV bases stay on VALID statuses only (net of cancellations). Every revenue
+// query therefore widens its WHERE to GMV_STATUSES and splits each measure with a
+// per-row "valid?" guard: SUM(ORIGINAL_PRODUCT_PRICE) over the whole result set is
+// gross GMV; everything else is wrapped in IFF(valid). Returns/failed stay out of
+// both — "include cancelled" is specifically about cancellations.
+const CANCELLED_STATUSES = ['Cancelled', 'Cancel requested'] as const;
+const GMV_STATUSES = [...VALID_REVENUE_STATUSES, ...CANCELLED_STATUSES];
+const GMV_STATUS_SQL = GMV_STATUSES.map(s => `'${s}'`).join(',');
+// Reusable per-row "is this a valid (non-cancelled) revenue row?" SQL predicate,
+// for the IFF() guards that keep NMV/orders/items/discounts on valid rows only.
+const IS_VALID_SQL = `f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})`;
+
 // Onboarding floor: never show a marketplace account's orders from before it was
 // onboarded (DIM_MARKETPLACE_ACCOUNTS.ONBOARD_DATE) — that pre-onboarding data is
 // spurious and, e.g., fragments the trend lines. Appended to every FACT↔DIM join
@@ -58,7 +72,7 @@ const PERSONA_DEFAULT_PERIOD = 'lifetime';
 // ── Order-quality status buckets ─────────────────────────────────────
 // Cancellation/return metrics look at ALL statuses (unlike the revenue
 // queries, which keep only VALID_REVENUE_STATUSES). Kept as SQL fragments.
-const CANCELLED_STATUS_SQL = `'Cancelled','Cancel requested'`;
+const CANCELLED_STATUS_SQL = CANCELLED_STATUSES.map(s => `'${s}'`).join(',');
 const RETURNED_STATUS_SQL  = `'Returned','Return requested','Return in progress'`;
 
 // Retention (repeat purchase) is a buyer-level metric that cannot be summed
@@ -97,6 +111,11 @@ export class CacheService implements OnModuleInit {
   private discountsByCompany = new Map<string, { data: any[]; expiresAt: number }>();
   private timeseriesInflight = new Map<string, Promise<any[]>>();
   private discountsInflight = new Map<string, Promise<any[]>>();
+  // Top Products is date-aware and merged across platforms/accounts (#6), so it is
+  // computed per (company, date range, platform, account) on demand and cached with
+  // the same TTL/LRU bounds as the other lazy datasets. Keyed by the full param set.
+  private productsRankedCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private productsRankedInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
@@ -311,13 +330,15 @@ export class CacheService implements OnModuleInit {
   // sentinel — so we can produce (company,platform), (company,ALL), (ALL,platform)
   // and (ALL,ALL) rollups, each with buyer-order counts computed WITHIN that grain
   // (repeat rate is not additive, so every rollup must be aggregated directly).
-  private retentionQuery(byCompany: boolean, byPlatform: boolean): string {
+  private retentionQuery(byCompany: boolean, byAccount: boolean, byPlatform: boolean): string {
     const co = byCompany ? 'a.COMPANY_NAME' : `'${RETENTION_ALL}'`;
+    const ac = byAccount ? 'a.ACCOUNT_NAME' : `'${RETENTION_ALL}'`;
     const pl = byPlatform ? 'a.PLATFORM' : `'${RETENTION_ALL}'`;
     return `
       WITH b AS (
         SELECT
           ${co} AS COMPANY_NAME,
+          ${ac} AS ACCOUNT_NAME,
           ${pl} AS PLATFORM,
           f.BUYER_ID AS SHOPPER,
           COUNT(DISTINCT f.PLATFORM_ORDER_ID) AS orders,
@@ -330,10 +351,11 @@ export class CacheService implements OnModuleInit {
           AND a.ACCOUNT_NAME != 's'
           AND f.BUYER_ID IS NOT NULL
           AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')
-        GROUP BY ${co}, ${pl}, f.BUYER_ID
+        GROUP BY ${co}, ${ac}, ${pl}, f.BUYER_ID
       )
       SELECT
         COMPANY_NAME,
+        ACCOUNT_NAME,
         PLATFORM,
         COUNT(*)                                                         AS BUYERS,
         SUM(IFF(orders >= 2, 1, 0))                                      AS REPEAT_BUYERS,
@@ -341,21 +363,26 @@ export class CacheService implements OnModuleInit {
         ROUND(100.0 * SUM(IFF(orders >= 2, gmv, 0)) / NULLIF(SUM(gmv),0), 1)        AS REPEAT_GMV_SHARE,
         ROUND(AVG(orders), 2)                                           AS AVG_ORDERS
       FROM b
-      GROUP BY COMPANY_NAME, PLATFORM
+      GROUP BY COMPANY_NAME, ACCOUNT_NAME, PLATFORM
     `;
   }
 
-  // Precompute repeat-purchase metrics (trailing 12 mo) at four grains and cache
-  // the union. Warmed in the bounded pool like personas/geo.
+  // Precompute repeat-purchase metrics (trailing 12 mo) at every grain combination
+  // and cache the union. Repeat rate is not additive, so each grain (company /
+  // account / platform, each either real or the __ALL__ rollup) must be aggregated
+  // directly — the frontend then picks the row matching the active company/account/
+  // platform filter (#7: repeat purchase now responds to the account selector).
   private async refreshRetention() {
-    const grains: Array<[boolean, boolean]> = [[true, true], [true, false], [false, true], [false, false]];
+    const bools = [true, false];
+    const grains: Array<[boolean, boolean, boolean]> = [];
+    for (const c of bools) for (const a of bools) for (const p of bools) grains.push([c, a, p]);
     const rows: any[] = [];
-    await this.mapPool(grains, this.WARM_CONCURRENCY, async ([byCompany, byPlatform]) => {
+    await this.mapPool(grains, this.WARM_CONCURRENCY, async ([byCompany, byAccount, byPlatform]) => {
       try {
-        const part = await this.snowflake.query(this.retentionQuery(byCompany, byPlatform));
+        const part = await this.snowflake.query(this.retentionQuery(byCompany, byAccount, byPlatform));
         rows.push(...part);
       } catch (err) {
-        this.logger.warn(`Retention[c=${byCompany},p=${byPlatform}] skipped: ${(err as Error).message}`);
+        this.logger.warn(`Retention[c=${byCompany},a=${byAccount},p=${byPlatform}] skipped: ${(err as Error).message}`);
       }
     });
     this.cache.set('retention', rows);
@@ -365,26 +392,34 @@ export class CacheService implements OnModuleInit {
   // Pure Snowflake fetchers for time series — no caching here (policy lives in
   // loadWithCache / the getter). SQL copied verbatim from the old
   // refreshTimeSeries; tenant variant adds ONLY `AND a.COMPANY_NAME = ?`.
-  private fetchAllTimeSeries(): Promise<any[]> {
-    return this.snowflake.query(`
-      SELECT
+  // Shared SELECT/GROUP body for the timeseries queries. GMV (REVENUE) is gross —
+  // includes cancelled — while ORDERS, ITEMS, REVENUE_VALID (the NMV base) and the
+  // discount columns stay on VALID statuses via IFF guards. The frontend derives
+  // NMV = REVENUE_VALID − platform − seller discount, and the date-aware Account
+  // Breakdown / Shop Performance tables + the platform pie are aggregated from this
+  // same (company, account, platform, day) grain so they always match the scorecards.
+  private readonly TIMESERIES_BODY = `
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
         DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
-        COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
-        COUNT(f.ORDER_ITEM_SK)                  AS ITEMS,
-        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE,
-        ROUND(SUM(f.FINAL_PRODUCT_PRICE), 2)    AS NMV,
-        ROUND(SUM(f.PLATFORM_DISCOUNT), 2)              AS PLATFORM_DISCOUNT,
-        ROUND(SUM(f.SELLER_DISCOUNT), 2)                AS SELLER_DISCOUNT,
-        ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
+        COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
+        COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS ITEMS,
+        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2)                         AS REVENUE,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.ORIGINAL_PRODUCT_PRICE, 0)), 2) AS REVENUE_VALID,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.PLATFORM_DISCOUNT, 0)), 2)              AS PLATFORM_DISCOUNT,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.SELLER_DISCOUNT, 0)), 2)                AS SELLER_DISCOUNT,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.PLATFORM_SHIPPING_FEE_DISCOUNT, 0)), 2) AS SHIPPING_DISCOUNT
       FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
-      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+      WHERE f.ITEM_STATUS IN (${GMV_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
       AND a.IS_ACTIVE = TRUE
-      AND a.ACCOUNT_NAME != 's'
+      AND a.ACCOUNT_NAME != 's'`;
+
+  private fetchAllTimeSeries(): Promise<any[]> {
+    return this.snowflake.query(`
+      SELECT ${this.TIMESERIES_BODY}
       GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `);
@@ -392,24 +427,7 @@ export class CacheService implements OnModuleInit {
 
   private fetchTenantTimeSeries(companyName: string): Promise<any[]> {
     return this.snowflake.query(`
-      SELECT
-        a.COMPANY_NAME,
-        a.ACCOUNT_NAME,
-        a.PLATFORM,
-        DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
-        COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
-        COUNT(f.ORDER_ITEM_SK)                  AS ITEMS,
-        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE,
-        ROUND(SUM(f.FINAL_PRODUCT_PRICE), 2)    AS NMV,
-        ROUND(SUM(f.PLATFORM_DISCOUNT), 2)              AS PLATFORM_DISCOUNT,
-        ROUND(SUM(f.SELLER_DISCOUNT), 2)                AS SELLER_DISCOUNT,
-        ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2) AS SHIPPING_DISCOUNT
-      FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
-      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
-      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
-      AND f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
-      AND a.ACCOUNT_NAME != 's'
+      SELECT ${this.TIMESERIES_BODY}
       AND a.COMPANY_NAME = ?
       GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
@@ -736,7 +754,53 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     this.discountsByCompany.clear();
     this.timeseriesInflight.clear();
     this.discountsInflight.clear();
-    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts)');
+    this.productsRankedCache.clear();
+    this.productsRankedInflight.clear();
+    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked)');
+  }
+
+  // ── Top Products (date-aware, cross-platform merged) ─────────────
+  // Builds the ranked-products SQL for the active scope. Measures mirror the GMV
+  // decision: REVENUE is gross GMV (incl. cancelled, from the widened WHERE), while
+  // ORDERS/UNITS/ASP stay on valid rows. Grouping by PRODUCT_NAME only merges the
+  // same product across SKUs AND platforms/accounts (#6); a platform/account filter
+  // narrows the scope so the merge happens within it. PLATFORM_COUNT lets the UI
+  // show "Multi" when a merged product spans platforms.
+  private fetchProductsRanked(
+    from: string, to: string,
+    company: string | null, platform: string | null, account: string | null,
+  ): Promise<any[]> {
+    const where = [
+      `f.ITEM_STATUS IN (${GMV_STATUS_SQL})`,
+      `f.ORDER_DATE >= ?`,
+      `f.ORDER_DATE <= ?`,
+      `a.IS_ACTIVE = TRUE`,
+      `a.ACCOUNT_NAME != 's'`,
+      `f.PRODUCT_NAME IS NOT NULL`,
+      `f.PRODUCT_NAME != ''`,
+    ];
+    const binds: any[] = [from, to];
+    if (company)  { where.push(`a.COMPANY_NAME = ?`); binds.push(company); }
+    if (platform) { where.push(`a.PLATFORM = ?`);     binds.push(platform); }
+    if (account)  { where.push(`a.ACCOUNT_NAME = ?`); binds.push(account); }
+    const sql = `
+      SELECT
+        f.PRODUCT_NAME,
+        COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
+        COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS UNITS,
+        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2)                         AS REVENUE,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.ORIGINAL_PRODUCT_PRICE, 0))
+              / NULLIF(COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL)), 0), 2) AS ASP,
+        COUNT(DISTINCT f.PLATFORM)                                      AS PLATFORM_COUNT,
+        ANY_VALUE(f.PLATFORM)                                           AS PLATFORM
+      FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      WHERE ${where.join(' AND ')}
+      GROUP BY f.PRODUCT_NAME
+      QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(f.ORIGINAL_PRODUCT_PRICE) DESC) <= 50
+      ORDER BY REVENUE DESC
+    `;
+    return this.snowflake.query(sql, binds);
   }
 
   // ── PUBLIC GETTERS ──────────────────────────────────────────────
@@ -764,6 +828,30 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
   getProducts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
     const data = (this.cache.get('products') || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
+  }
+
+  // Date-aware, cross-platform-merged Top Products (#6). Tenants are always pinned
+  // to their own company (the `company` arg is ignored for them); admins may scope
+  // to a company or pass 'all'/none for a cross-company ranking. Results are cached
+  // per full param set; admin all-company scans run serialized (heavy) like the
+  // other admin loads.
+  async getProductsRanked(
+    companyName: string, isAdmin: boolean,
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string },
+  ): Promise<any[]> {
+    const from = opts.dateFrom || '2023-01-01';
+    const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
+    const effCompany = isAdmin
+      ? (opts.company && opts.company !== 'all' ? opts.company : null)
+      : companyName;
+    const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
+    const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*' });
+    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account);
+    const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
+    return this.loadWithCache(
+      this.productsRankedCache, this.productsRankedInflight, key, fetchFn, 'products-ranked',
+    );
   }
 
   getPersonas(companyName: string, isAdmin: boolean, period = PERSONA_DEFAULT_PERIOD) {

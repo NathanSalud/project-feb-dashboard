@@ -75,6 +75,12 @@ export const getShops = (dateFrom?: string, dateTo?: string, brand?: string) =>
 export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/products', { params: { dateFrom, dateTo, brand } });
 
+// Date-aware, cross-platform-merged Top Products (#6). Filters are applied
+// server-side so the ranking always matches the active scorecard date range.
+export const getProductsRanked = (
+  dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
+) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company } });
+
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
