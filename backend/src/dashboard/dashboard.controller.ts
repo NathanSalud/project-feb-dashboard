@@ -87,8 +87,13 @@ export class DashboardController {
   }
 
   @Get('geo')
-  getGeo(@Request() req, @Query('period') period?: string) {
-    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period);
+  getGeo(
+    @Request() req,
+    @Query('period') period?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
+  ) {
+    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period, brand, category);
   }
 
   @Get('discounts')
@@ -116,11 +121,18 @@ export class DashboardController {
   }
 
   @Get('personas')
-  getPersonas(@Request() req, @Query('period') period?: string) {
+  getPersonas(
+    @Request() req,
+    @Query('period') period?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
+  ) {
     return this.dashboardService.getPersonas(
       req.user.companyName,
       req.user.isAdmin,
       period,
+      brand,
+      category,
     );
   }
 
@@ -138,5 +150,20 @@ export class DashboardController {
   @Get('retention')
   getRetention(@Request() req) {
     return this.dashboardService.getRetention(req.user.companyName, req.user.isAdmin);
+  }
+
+  // Brand/category-aware repeat purchase for the active scope (single aggregated row).
+  @Get('retention-filtered')
+  getRetentionFiltered(
+    @Request() req,
+    @Query('account') account?: string,
+    @Query('platform') platform?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
+    @Query('company') company?: string,
+  ) {
+    return this.dashboardService.getRetentionFiltered(req.user.companyName, req.user.isAdmin, {
+      account, platform, brand, category, company,
+    });
   }
 }

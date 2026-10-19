@@ -70,8 +70,8 @@ export class DashboardService {
     return this.cache.getAccounts();
   }
 
-  getGeo(companyName: string, isAdmin: boolean, period?: string) {
-  return this.cache.getGeo(companyName, isAdmin, period);
+  getGeo(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string) {
+  return this.cache.getGeo(companyName, isAdmin, period, brand, category);
 }
 
   async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
@@ -83,8 +83,8 @@ export class DashboardService {
     return this.cache.getDoi(companyName, isAdmin);
   }
 
-  getPersonas(companyName: string, isAdmin: boolean, period?: string) {
-    return this.cache.getPersonas(companyName, isAdmin, period);
+  getPersonas(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string) {
+    return this.cache.getPersonas(companyName, isAdmin, period, brand, category);
   }
 
   getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
@@ -94,6 +94,13 @@ export class DashboardService {
 
   getRetention(companyName: string, isAdmin: boolean) {
     return this.cache.getRetention(companyName, isAdmin);
+  }
+
+  getRetentionFiltered(
+    companyName: string, isAdmin: boolean,
+    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string },
+  ) {
+    return this.cache.getRetentionFiltered(companyName, isAdmin, opts);
   }
 
   getStatus() {

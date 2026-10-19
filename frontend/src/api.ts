@@ -89,8 +89,8 @@ export const getProductsRanked = (
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
-export const getGeo = (period = 'overall') =>
-  api.get('/dashboard/geo', { params: { period } });
+export const getGeo = (period = 'overall', brand?: string, category?: string) =>
+  api.get('/dashboard/geo', { params: { period, brand, category } });
 
 export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
   api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand, category } });
@@ -98,13 +98,18 @@ export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string,
 export const getDoi = () =>
   api.get('/dashboard/doi');
 
-export const getPersonas = (period = 'lifetime') =>
-  api.get('/dashboard/personas', { params: { period } });
+export const getPersonas = (period = 'lifetime', brand?: string, category?: string) =>
+  api.get('/dashboard/personas', { params: { period, brand, category } });
 
 export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
   api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand, category } });
 
 export const getRetention = () =>
   api.get('/dashboard/retention');
+
+// Brand/category-aware repeat purchase for the active scope (single row).
+export const getRetentionFiltered = (
+  account?: string, platform?: string, brand?: string, category?: string, company?: string,
+) => api.get('/dashboard/retention-filtered', { params: { account, platform, brand, category, company } });
 
 export default api;

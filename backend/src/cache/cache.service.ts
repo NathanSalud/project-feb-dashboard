@@ -138,6 +138,13 @@ export class CacheService implements OnModuleInit {
   private discountsBCInflight = new Map<string, Promise<any[]>>();
   private cancellationsBCByCompany = new Map<string, { data: any[]; expiresAt: number }>();
   private cancellationsBCInflight = new Map<string, Promise<any[]>>();
+  // Brand/category-filtered geo, retention and personas (on demand).
+  private geoBCCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private geoBCInflight = new Map<string, Promise<any[]>>();
+  private retentionBCCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private retentionBCInflight = new Map<string, Promise<any[]>>();
+  private personasBCCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private personasBCInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
@@ -644,25 +651,7 @@ private async refreshGeo() {
   await this.mapPool(Object.entries(GEO_PERIODS), this.WARM_CONCURRENCY, async ([period, floor]) => {
     try {
       const data = await this.snowflake.query(this.geoQuery(floor));
-      // Normalise province names and merge duplicates
-      const merged: Record<string, any> = {};
-      data.forEach((r: any) => {
-        const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
-        const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
-        if (!merged[key]) {
-          merged[key] = {
-            COMPANY_NAME:      r.COMPANY_NAME,
-            ACCOUNT_NAME:      r.ACCOUNT_NAME,
-            PLATFORM:          r.PLATFORM,
-            SHIPPING_PROVINCE: province,
-            ORDERS:            0,
-            REVENUE:           0,
-          };
-        }
-        merged[key].ORDERS  += Number(r.ORDERS);
-        merged[key].REVENUE += Number(r.REVENUE);
-      });
-      const result = Object.values(merged);
+      const result = this.normaliseGeoRows(data);
       this.cache.set(`geo:${period}`, result);
       this.logger.log(`Geo[${period}] cached — ${result.length} rows`);
     } catch (err) {
@@ -670,6 +659,118 @@ private async refreshGeo() {
       this.logger.warn(`Geo[${period}] refresh skipped: ${(err as Error).message}`);
     }
   });
+}
+
+// Normalise province names and merge duplicates (shared by the precompute and the
+// on-demand brand/category-filtered geo path).
+private normaliseGeoRows(data: any[]): any[] {
+  const merged: Record<string, any> = {};
+  data.forEach((r: any) => {
+    const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
+    const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
+    if (!merged[key]) {
+      merged[key] = {
+        COMPANY_NAME: r.COMPANY_NAME, ACCOUNT_NAME: r.ACCOUNT_NAME, PLATFORM: r.PLATFORM,
+        SHIPPING_PROVINCE: province, ORDERS: 0, REVENUE: 0,
+      };
+    }
+    merged[key].ORDERS  += Number(r.ORDERS);
+    merged[key].REVENUE += Number(r.REVENUE);
+  });
+  return Object.values(merged);
+}
+
+// Brand/category-aware Sales-by-Province, on demand. Same province aggregate as the
+// precompute + the DIM_PRODUCTS join and brand/category WHERE; normalised the same
+// way. company=null → all tenants (admin).
+private async fetchGeoEnriched(company: string | null, dateFloor: string, brand?: string, category?: string): Promise<any[]> {
+  const bc = this.brandCatWhere(brand, category);
+  const binds: any[] = [];
+  const compSql = company ? ' AND a.COMPANY_NAME = ?' : '';
+  if (company) binds.push(company);
+  binds.push(...bc.binds);
+  const rows = await this.snowflake.query(`
+    SELECT
+      a.COMPANY_NAME,
+      a.ACCOUNT_NAME,
+      a.PLATFORM,
+      f.SHIPPING_PROVINCE,
+      COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
+      ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
+    FROM ${FACT_SQL} f
+    INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+    ${PRODUCT_DIM_JOIN}
+    WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+    AND ${dateFloor}
+    AND a.IS_ACTIVE = TRUE
+    AND a.ACCOUNT_NAME != 's'
+    AND f.SHIPPING_PROVINCE IS NOT NULL
+    AND f.SHIPPING_PROVINCE != ''${compSql}${bc.sql}
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, f.SHIPPING_PROVINCE
+    ORDER BY a.COMPANY_NAME, REVENUE DESC
+  `, binds);
+  return this.normaliseGeoRows(rows);
+}
+
+// Brand/category-aware repeat purchase, on demand, for ONE active scope (company /
+// account / platform, each optional) over the trailing 12 months. Returns a single
+// aggregated row {BUYERS, REPEAT_BUYERS, REPEAT_RATE, REPEAT_GMV_SHARE, AVG_ORDERS}.
+// "Repeat" here = a buyer with ≥2 orders OF THE FILTERED brand/category in-window.
+private fetchRetentionFiltered(
+  company: string | null, account: string | null, platform: string | null,
+  brand?: string, category?: string,
+): Promise<any[]> {
+  const bc = this.brandCatWhere(brand, category);
+  const binds: any[] = [];
+  const scope: string[] = [];
+  if (company)  { scope.push('a.COMPANY_NAME = ?'); binds.push(company); }
+  if (account)  { scope.push('a.ACCOUNT_NAME = ?'); binds.push(account); }
+  if (platform) { scope.push('a.PLATFORM = ?');     binds.push(platform); }
+  binds.push(...bc.binds);
+  const scopeSql = scope.length ? ' AND ' + scope.join(' AND ') : '';
+  return this.snowflake.query(`
+    WITH b AS (
+      SELECT
+        f.BUYER_ID AS SHOPPER,
+        COUNT(DISTINCT f.PLATFORM_ORDER_ID) AS orders,
+        SUM(f.ORIGINAL_PRODUCT_PRICE)       AS gmv
+      FROM ${FACT_SQL} f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${PRODUCT_DIM_JOIN}
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+        AND ${RETENTION_FLOOR_SQL}
+        AND a.IS_ACTIVE = TRUE
+        AND a.ACCOUNT_NAME != 's'
+        AND f.BUYER_ID IS NOT NULL
+        AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')${scopeSql}${bc.sql}
+      GROUP BY f.BUYER_ID
+    )
+    SELECT
+      COUNT(*)                                                              AS BUYERS,
+      SUM(IFF(orders >= 2, 1, 0))                                           AS REPEAT_BUYERS,
+      ROUND(100.0 * SUM(IFF(orders >= 2, 1, 0)) / NULLIF(COUNT(*),0), 1)     AS REPEAT_RATE,
+      ROUND(100.0 * SUM(IFF(orders >= 2, gmv, 0)) / NULLIF(SUM(gmv),0), 1)   AS REPEAT_GMV_SHARE,
+      ROUND(AVG(orders), 2)                                                 AS AVG_ORDERS
+    FROM b
+  `, binds);
+}
+
+// Brand/category-aware personas (RFM), on demand. Same scoring as personaQuery but
+// with the DIM_PRODUCTS join + brand/category filter inside the shopper CTE. Note:
+// the ≥500-buyer segment gate still applies, so narrow brand filters may leave few
+// or no qualifying (company, platform) segments — the UI shows its "no data" state.
+private personaQueryEnriched(dateFloor: string, brand?: string, category?: string): { sql: string; binds: any[] } {
+  const base = this.personaQuery(dateFloor);
+  const bc = this.brandCatWhere(brand, category);
+  // Inject the dim join right after the shopper CTE's accounts join, and the
+  // brand/category predicate into that CTE's WHERE (keyed off the shared date floor).
+  const sql = base
+    .replace(
+      `INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}`,
+      `INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}\n        ${PRODUCT_DIM_JOIN}`,
+    )
+    .replace(`AND ${dateFloor}`, `AND ${dateFloor}${bc.sql}`);
+  return { sql, binds: bc.binds };
 }
 
 // Pure Snowflake fetchers for discounts — no caching here (policy lives in
@@ -909,6 +1010,12 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     this.discountsBCInflight.clear();
     this.cancellationsBCByCompany.clear();
     this.cancellationsBCInflight.clear();
+    this.geoBCCache.clear();
+    this.geoBCInflight.clear();
+    this.retentionBCCache.clear();
+    this.retentionBCInflight.clear();
+    this.personasBCCache.clear();
+    this.personasBCInflight.clear();
     this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, brand/category variants)');
   }
 
@@ -1039,10 +1146,22 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     return { brands, categories };
   }
 
-  getPersonas(companyName: string, isAdmin: boolean, period = PERSONA_DEFAULT_PERIOD) {
+  async getPersonas(companyName: string, isAdmin: boolean, period = PERSONA_DEFAULT_PERIOD, brand?: string, category?: string) {
     // Unknown/absent period falls back to the default window.
-    const key = PERSONA_PERIODS[period] ? `personas:${period}` : `personas:${PERSONA_DEFAULT_PERIOD}`;
-    const data = (this.cache.get(key) || []) as any[];
+    const per = PERSONA_PERIODS[period] ? period : PERSONA_DEFAULT_PERIOD;
+    if (this.brandCatActive(brand, category)) {
+      // On-demand RFM recompute restricted to the brand/category (heavy → serialized
+      // and cached per period+brand+category). Segments under the ≥500-buyer gate
+      // drop out, so narrow filters may yield few/no tiers.
+      const { sql, binds } = this.personaQueryEnriched(PERSONA_PERIODS[per], brand, category);
+      const key = `${per}|${brand || 'all'}|${category || 'all'}`;
+      const data = await this.loadWithCache(
+        this.personasBCCache, this.personasBCInflight,
+        key, () => this.runExclusive(() => this.snowflake.query(sql, binds)), 'personas-bc',
+      );
+      return this.filterCompany(data, companyName, isAdmin);
+    }
+    const data = (this.cache.get(`personas:${per}`) || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
   }
 
@@ -1050,9 +1169,20 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     return this.cache.get('accounts') || [];
   }
 
-  getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD) {
-  const key = GEO_PERIODS[period] ? `geo:${period}` : `geo:${GEO_DEFAULT_PERIOD}`;
-  const data = (this.cache.get(key) || []) as any[];
+  async getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD, brand?: string, category?: string) {
+  const per = GEO_PERIODS[period] ? period : GEO_DEFAULT_PERIOD;
+  if (this.brandCatActive(brand, category)) {
+    const floor = GEO_PERIODS[per];
+    const key = `${companyName}|${per}|${brand || 'all'}|${category || 'all'}`;
+    const data = isAdmin
+      ? await this.runExclusive(() => this.fetchGeoEnriched(null, floor, brand, category))
+      : await this.loadWithCache(
+          this.geoBCCache, this.geoBCInflight,
+          key, () => this.fetchGeoEnriched(companyName, floor, brand, category), 'geo-bc',
+        );
+    return this.filterCompany(data, companyName, isAdmin);
+  }
+  const data = (this.cache.get(`geo:${per}`) || []) as any[];
   return this.filterCompany(data, companyName, isAdmin);
 }
 
@@ -1110,6 +1240,25 @@ getDoi(companyName: string, isAdmin: boolean) {
   getRetention(companyName: string, isAdmin: boolean) {
     const data = (this.cache.get('retention') || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
+  }
+
+  // Brand/category-aware repeat purchase for the active (company, account, platform)
+  // scope, computed on demand. Returns a single aggregated row. Tenants are pinned
+  // to their own company; admins may scope to one company or across all.
+  async getRetentionFiltered(
+    companyName: string, isAdmin: boolean,
+    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string },
+  ) {
+    const effCompany = isAdmin ? (opts.company && opts.company !== 'all' ? opts.company : null) : companyName;
+    const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
+    const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
+    const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
+    const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
+    const key = JSON.stringify({ c: effCompany ?? '*', a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*' });
+    const run = () => this.fetchRetentionFiltered(effCompany, account, platform, brand, category);
+    const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
+    const rows = await this.loadWithCache(this.retentionBCCache, this.retentionBCInflight, key, fetchFn, 'retention-bc');
+    return rows[0] || { BUYERS: 0, REPEAT_BUYERS: 0, REPEAT_RATE: 0, REPEAT_GMV_SHARE: 0, AVG_ORDERS: 0 };
   }
 
   getStatus() {

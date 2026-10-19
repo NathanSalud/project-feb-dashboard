@@ -40,13 +40,13 @@ const card: React.CSSProperties = {
 const title: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: TEXT1 };
 const note: React.CSSProperties = { fontSize: 10.5, color: TEXT3, marginTop: 2, marginBottom: 12 };
 
-export default function PersonasTab({ platform, company = 'all', isAdmin }: { platform: string; company?: string; isAdmin: boolean }) {
+export default function PersonasTab({ platform, company = 'all', isAdmin, brand = 'all', category = 'all' }: { platform: string; company?: string; isAdmin: boolean; brand?: string; category?: string }) {
   const [period, setPeriod] = useState<string>('lifetime');
   const periodNote = PERIODS.find(p => p.key === period)?.note ?? 'lifetime (2023–present)';
 
   const { data: raw = [], isFetching } = useQuery({
-    queryKey: ['personas', period],
-    queryFn: () => getPersonas(period).then(r => r.data),
+    queryKey: ['personas', period, brand, category],
+    queryFn: () => getPersonas(period, brand, category).then(r => r.data),
   });
 
   // Timeframe selector — always visible so the window can be switched even while
@@ -110,8 +110,8 @@ export default function PersonasTab({ platform, company = 'all', isAdmin }: { pl
         <div style={card}>
           <div style={{ color: TEXT2, fontSize: 12.5, padding: 20, lineHeight: 1.6 }}>
             No persona data for this selection ({periodNote}). Segments under 500 buyers are omitted, so a small
-            account, platform, or short window may not appear — try a wider timeframe or switching the platform
-            filter to <b>All Platforms</b>.
+            account, platform, short window, or a narrow <b>Brand/Category</b> filter may not appear — try a wider
+            timeframe, <b>All Platforms</b>, or clearing the brand/category filter.
           </div>
         </div>
       </div>

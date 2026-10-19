@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getProductDims } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getRetentionFiltered, getProductDims } from './api';
 import PersonasTab from './PersonasTab';
 import ComparePanels from './ComparePanels';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -129,8 +129,8 @@ export default function Dashboard() {
     placeholderData: keepPreviousData,
   });
   const { data: geoRaw = [] } = useQuery({
-    queryKey: ['geo', geoPeriod],
-    queryFn: () => getGeo(geoPeriod).then(r => r.data),
+    queryKey: ['geo', geoPeriod, cBrand, cCategory],
+    queryFn: () => getGeo(geoPeriod, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
@@ -152,6 +152,14 @@ export default function Dashboard() {
     queryKey: ['retention'],
     queryFn: () => getRetention().then(r => r.data),
     enabled: !!user, // trailing-12mo repeat metrics; company-scoped server-side
+  });
+  // When a brand/category filter is active, repeat purchase is recomputed on demand
+  // for the exact active scope (single row) instead of read from the precompute.
+  const { data: retFiltered } = useQuery({
+    queryKey: ['retention-filtered', cCompany, cAcc, cPlat, cBrand, cCategory],
+    queryFn: () => getRetentionFiltered(cAcc, cPlat, cBrand, cCategory, cCompany).then(r => r.data),
+    enabled: !!user && (cBrand !== 'all' || cCategory !== 'all'),
+    placeholderData: keepPreviousData,
   });
   const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
   // Rows are tagged server-side with COMPANY_NAME/ACCOUNT_NAMES. Tenants filter by the
@@ -305,6 +313,9 @@ export default function Dashboard() {
   const retRow = (retention as any[]).find(
     (r: any) => r.COMPANY_NAME === retEffCompany && r.ACCOUNT_NAME === retEffAccount && r.PLATFORM === retEffPlatform
   );
+  // With a brand/category filter active, use the on-demand filtered row; otherwise
+  // the precomputed row matching the active company/account/platform.
+  const retDisplay: any = bcActive ? retFiltered : retRow;
 
   // Time series chart data
   const groupKey = (dateStr: string) => {
@@ -673,9 +684,9 @@ export default function Dashboard() {
           {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7')}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
           {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
-          {kpiCard('Repeat Purchase Rate', retRow ? retRow.REPEAT_RATE + '%' : '—',
-                   bcActive ? 'All brands/categories · trailing 12mo'
-                            : (retRow ? `${retRow.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months'), '#22a06b')}
+          {kpiCard('Repeat Purchase Rate',
+                   (retDisplay && retDisplay.REPEAT_RATE != null) ? retDisplay.REPEAT_RATE + '%' : '—',
+                   (retDisplay && retDisplay.REPEAT_GMV_SHARE != null) ? `${retDisplay.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b')}
         </div>
 
         {/* TIME SERIES CHARTS */}
@@ -929,7 +940,7 @@ export default function Dashboard() {
                 {miniExport(geoSorted, 'sales_by_province.csv')}
               </div>
             </div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}{bcActive ? ' · all brands/categories' : ''}</div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
             <ResponsiveContainer width="100%" height={geoShowAll ? Math.max(220, geoData.length * 20) : 220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
@@ -1000,8 +1011,7 @@ export default function Dashboard() {
         {SHOW_PERSONAS && (
           <>
             {sectionLabel('Buyer Personas', 'buyer-personas')}
-            {bcActive && <div style={{ fontSize: 10.5, color: TEXT3, marginTop: -4, marginBottom: 10 }}>Note: buyer personas are not filtered by brand/category — showing all brands.</div>}
-            <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} />
+            <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} brand={cBrand} category={cCategory} />
           </>
         )}
 
