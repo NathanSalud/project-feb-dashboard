@@ -260,18 +260,18 @@ export default function Dashboard() {
     pd:       tsRevOrd.pd        || 0,
     sd:       tsRevOrd.sd        || 0,
     ship:     tsRevOrd.ship      || 0,
-    // NMV = valid GMV − the two PRODUCT discounts (platform + seller). Built off
-    // REVENUE_VALID (not gross GMV) so NMV, Discount Rate and the Discount Analysis
-    // breakdown all still reconcile to the peso on the valid-order base. Shipping-fee
-    // discounts are excluded (they reduce shipping, not merchandise).
-    nmv:      (tsRevOrd.revValid || 0) - (tsRevOrd.pd || 0) - (tsRevOrd.sd || 0),
+    // NMV = valid-order merchandise value, measured BEFORE discounts — it differs
+    // from gross GMV only by excluding cancelled orders (NMV = REVENUE_VALID). So
+    // GMV − NMV = the cancelled-order value. Discounts are NOT subtracted here; they
+    // live in the Discount Analysis section and the Discount Rate KPI below.
+    nmv:      (tsRevOrd.revValid || 0),
   };
   const aov      = totals.orders > 0 ? totals.revenue / totals.orders : 0;  // gross GMV ÷ valid orders
-  // Discount Rate and NMV% are defined on the VALID GMV base (where the discounts
-  // and NMV live), so they stay exact complements that sum to 100% — unaffected by
-  // the cancelled orders now in gross GMV.
-  const discRate = totals.revValid > 0 ? (((totals.revValid - totals.nmv) / totals.revValid) * 100).toFixed(1) : '0.0';
-  const nmvPct   = totals.revValid > 0 ? ((totals.nmv / totals.revValid) * 100).toFixed(1) : '0.0';
+  // Discount Rate is the product-discount give-back as a share of valid (NMV) sales —
+  // an independent metric now that NMV is gross of discounts. NMV% is NMV as a share
+  // of gross GMV, i.e. the non-cancelled share.
+  const discRate = totals.revValid > 0 ? (((totals.pd + totals.sd) / totals.revValid) * 100).toFixed(1) : '0.0';
+  const nmvPct   = totals.revenue > 0 ? ((totals.nmv / totals.revenue) * 100).toFixed(1) : '0.0';
 
   // ── Cancellation rate (date-aware; server already date-filtered) ──
   const cxAgg = (cancellations as any[])
@@ -342,8 +342,8 @@ export default function Dashboard() {
         // revenue = gross GMV (incl. cancelled); aov uses it over valid orders.
         revenue: d.revenue, orders: d.orders, items: d.items,
         aov: d.orders > 0 ? Math.round(d.revenue/d.orders) : 0,
-        // NMV per period = valid GMV − platform − seller discount (net of cancellations).
-        nmv: d.revValid - d.pd - d.sd,
+        // NMV per period = valid-order GMV before discounts (excl. cancelled only).
+        nmv: d.revValid,
         // Average Basket Size = units per order (a ratio, so it is never stacked across platforms).
         abs: d.orders > 0 ? d.items/d.orders : 0,
       };
@@ -352,7 +352,7 @@ export default function Dashboard() {
         row[`orders__${p}`]  = pv.orders;
         row[`items__${p}`]   = pv.items;
         row[`aov__${p}`]     = pv.orders > 0 ? Math.round(pv.revenue/pv.orders) : 0;
-        row[`nmv__${p}`]     = pv.revValid - pv.pd - pv.sd;
+        row[`nmv__${p}`]     = pv.revValid;
         row[`abs__${p}`]     = pv.orders > 0 ? pv.items/pv.orders : 0;
       }
       return row;
@@ -652,7 +652,7 @@ export default function Dashboard() {
         {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px,1fr))', gap: 12, marginBottom: 20 }}>
           {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL)}
-          {kpiCard('Total NMV',       fmt(totals.nmv),     `Net of discounts & cancellations · ${nmvPct}% of valid GMV`, '#14808a')}
+          {kpiCard('Total NMV',       fmt(totals.nmv),     `Excl. cancelled orders · before discounts · ${nmvPct}% of GMV`, '#14808a')}
           {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD)}
           {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
           {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a')}

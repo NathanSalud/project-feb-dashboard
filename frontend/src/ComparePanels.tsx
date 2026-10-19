@@ -64,7 +64,7 @@ const addRow = (a: Agg, r: any) => {
 const kpiValue = (kpi: KpiKey, a: Agg): number => {
   switch (kpi) {
     case 'gmv':    return a.rev;
-    case 'nmv':    return a.revValid - a.pd - a.sd;
+    case 'nmv':    return a.revValid;  // valid-order GMV, before discounts (excl. cancelled only)
     case 'units':  return a.items;
     case 'orders': return a.orders;
     case 'aov':    return a.orders > 0 ? a.rev / a.orders : 0;
