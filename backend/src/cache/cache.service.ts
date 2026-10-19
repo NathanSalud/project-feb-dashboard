@@ -388,7 +388,7 @@ export class CacheService implements OnModuleInit {
   // dropdowns. Built once at refresh from DIM_PRODUCTS × active accounts (small).
   private async refreshProductDims() {
     const data = await this.snowflake.query(`
-      SELECT DISTINCT a.COMPANY_NAME, p.BRAND_NAME, p.PRODUCT_CATEGORY
+      SELECT DISTINCT a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, p.BRAND_NAME, p.PRODUCT_CATEGORY
       FROM GDEC_DATAMART.GOLD_SCHEMA.DIM_PRODUCTS p
       INNER JOIN ${ACCOUNTS_SQL} a ON p.SHOP_ID = a.SHOP_ID
       WHERE a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
@@ -1136,13 +1136,31 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   }
 
   // Distinct brands & categories available to the caller, for the filter dropdowns.
-  // Scoped to the tenant's company (admins get all, or one company when selected).
-  getProductDims(companyName: string, isAdmin: boolean, company?: string) {
+  // Dynamic/cascading: the lists reflect the active company + account + platform
+  // selection, and Brand ↔ Category narrow each other (the Category list is
+  // computed under the selected brand, and vice-versa) so the dropdowns only ever
+  // offer combinations that exist in the catalog. Catalog-based (DIM_PRODUCTS), not
+  // sales-based, so it stays instant and date-independent.
+  getProductDims(
+    companyName: string, isAdmin: boolean,
+    opts: { company?: string; account?: string; platform?: string; brand?: string; category?: string } = {},
+  ) {
     const rows = (this.cache.get('productDims') || []) as any[];
-    const effCompany = isAdmin ? (company && company !== 'all' ? company : null) : companyName;
-    const scoped = effCompany ? rows.filter(r => r.COMPANY_NAME === effCompany) : rows;
-    const brands = [...new Set(scoped.map(r => r.BRAND_NAME).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
-    const categories = [...new Set(scoped.map(r => r.PRODUCT_CATEGORY).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+    const effCompany = isAdmin ? (opts.company && opts.company !== 'all' ? opts.company : null) : companyName;
+    const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
+    const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
+    const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : null;
+    const category = opts.category && opts.category !== 'all' ? opts.category : null;
+    // Common scope (company/account/platform) shared by both dropdowns.
+    const base = rows.filter(r =>
+      (!effCompany || r.COMPANY_NAME === effCompany) &&
+      (!account    || r.ACCOUNT_NAME === account) &&
+      (!platform   || r.PLATFORM === platform));
+    const uniqSort = (vals: any[]) => [...new Set(vals.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+    // Brand list respects the selected category; category list respects the selected
+    // brand — so picking one narrows the other without locking it.
+    const brands = uniqSort(base.filter(r => !category || r.PRODUCT_CATEGORY === category).map(r => r.BRAND_NAME));
+    const categories = uniqSort(base.filter(r => !brand || r.BRAND_NAME === brand).map(r => r.PRODUCT_CATEGORY));
     return { brands, categories };
   }
 

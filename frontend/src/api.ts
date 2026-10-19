@@ -72,9 +72,11 @@ export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string
 export const getShops = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/shops', { params: { dateFrom, dateTo, brand } });
 
-// Brand & Category filter options for the dropdowns (scoped to the tenant).
-export const getProductDims = (company?: string) =>
-  api.get('/dashboard/product-dims', { params: { company } });
+// Brand & Category filter options — cascades with company/account/platform and
+// Brand ↔ Category narrow each other.
+export const getProductDims = (
+  company?: string, account?: string, platform?: string, brand?: string, category?: string,
+) => api.get('/dashboard/product-dims', { params: { company, account, platform, brand, category } });
 
 export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/products', { params: { dateFrom, dateTo, brand } });

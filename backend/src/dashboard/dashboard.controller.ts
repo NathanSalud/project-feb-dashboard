@@ -75,10 +75,20 @@ export class DashboardController {
     });
   }
 
-  // Brand & Category options for the filter dropdowns, scoped to the tenant.
+  // Brand & Category options for the filter dropdowns — cascades with the active
+  // company/account/platform, and Brand ↔ Category narrow each other.
   @Get('product-dims')
-  getProductDims(@Request() req, @Query('company') company?: string) {
-    return this.dashboardService.getProductDims(req.user.companyName, req.user.isAdmin, company);
+  getProductDims(
+    @Request() req,
+    @Query('company') company?: string,
+    @Query('account') account?: string,
+    @Query('platform') platform?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
+  ) {
+    return this.dashboardService.getProductDims(req.user.companyName, req.user.isAdmin, {
+      company, account, platform, brand, category,
+    });
   }
 
   @Get('accounts')

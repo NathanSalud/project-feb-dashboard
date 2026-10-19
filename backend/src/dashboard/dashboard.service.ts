@@ -62,8 +62,11 @@ export class DashboardService {
     return this.cache.getProductsRanked(companyName, isAdmin, opts);
   }
 
-  getProductDims(companyName: string, isAdmin: boolean, company?: string) {
-    return this.cache.getProductDims(companyName, isAdmin, company);
+  getProductDims(
+    companyName: string, isAdmin: boolean,
+    opts: { company?: string; account?: string; platform?: string; brand?: string; category?: string },
+  ) {
+    return this.cache.getProductDims(companyName, isAdmin, opts);
   }
 
   getAccounts() {

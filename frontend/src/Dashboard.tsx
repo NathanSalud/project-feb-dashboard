@@ -103,16 +103,27 @@ export default function Dashboard() {
   // Brand & Category filter options, scoped to the selected company (admins) /
   // the tenant's own company. Drives the two global dropdowns.
   const { data: productDims = { brands: [], categories: [] } } = useQuery({
-    queryKey: ['product-dims', cCompany],
-    queryFn: () => getProductDims(cCompany).then(r => r.data),
+    queryKey: ['product-dims', cCompany, cAcc, cPlat, cBrand, cCategory],
+    queryFn: () => getProductDims(cCompany, cAcc, cPlat, cBrand, cCategory).then(r => r.data),
     enabled: !!user,
     placeholderData: keepPreviousData,
   });
   const brandOptions: string[] = productDims?.brands ?? [];
   const categoryOptions: string[] = productDims?.categories ?? [];
-  // True when a brand or category filter is active — gates the "not filtered"
-  // captions on the few views that don't yet honor brand/category.
+  // True when a brand or category filter is active.
   const bcActive = cBrand !== 'all' || cCategory !== 'all';
+
+  // If the active brand/category drops out of the newly-cascaded option list (e.g.
+  // after switching account/platform, or because they no longer co-occur), reset it
+  // to "all" so the dropdown never shows a stale selection with no matching data.
+  useEffect(() => {
+    if (cBrand !== 'all' && brandOptions.length > 0 && !brandOptions.includes(cBrand)) setCBrand('all');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandOptions]);
+  useEffect(() => {
+    if (cCategory !== 'all' && categoryOptions.length > 0 && !categoryOptions.includes(cCategory)) setCCategory('all');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryOptions]);
   const { data: shopsRes, isFetching: sFetch } = useQuery({
     queryKey: ['shops', qDateFrom, qDateTo, cBrand],
     queryFn: () => getShops(qDateFrom, qDateTo, cBrand).then(r => r.data),
