@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getProductDims } from './api';
 import PersonasTab from './PersonasTab';
 import ComparePanels from './ComparePanels';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -37,17 +37,11 @@ const GEO_PERIODS = [
   { key: '24m',     label: 'Past 24 mo', note: 'past 24 months' },
 ] as const;
 
-// TODO: replace with real brand list from backend
-const STUB_BRANDS = ['Placeholder Brand A', 'Placeholder Brand B', 'Placeholder Brand C'];
-
 export default function Dashboard() {
   // Hidden for now — insights analyze all 2023–2026 data regardless of the user's date
   // filter, so they read as too broad. Re-enable once /insights/generate respects the
   // active date range.
   const SHOW_AI_INSIGHTS = false;
-  // UI shell only. No backend brand data yet; the Brand <select> and its `brand`
-  // API param are forward-wired and inert until this is flipped on.
-  const SHOW_BRAND_FILTER = false;
   const { user, logout } = useAuth();
   // Buyer-persona (RFM) tab. Backend is live at /dashboard/personas. Shown to the
   // gdec_admin account ONLY for internal review of the data/filters before any
@@ -72,6 +66,7 @@ export default function Dashboard() {
   const [cAcc, setCAcc]           = useState<string>(savedFilters.cAcc ?? 'all');
   const [cPlat, setCPlat]         = useState<string>(savedFilters.cPlat ?? 'all');
   const [cBrand, setCBrand]       = useState<string>(savedFilters.cBrand ?? 'all');
+  const [cCategory, setCCategory] = useState<string>(savedFilters.cCategory ?? 'all');
   const [dateFrom, setDateFrom]   = useState<string>(savedFilters.dateFrom ?? '2023-01-01');
   // End date starts at the saved value, else today; the snap effect below only
   // moves it to the latest day present when there is NO saved range.
@@ -101,10 +96,23 @@ export default function Dashboard() {
     placeholderData: keepPreviousData,
   });
   const { data: timeSeries = [], isFetching: tFetch } = useQuery({
-    queryKey: ['timeseries', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    queryKey: ['timeseries', qDateFrom, qDateTo, cBrand, cCategory],
+    queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
+  // Brand & Category filter options, scoped to the selected company (admins) /
+  // the tenant's own company. Drives the two global dropdowns.
+  const { data: productDims = { brands: [], categories: [] } } = useQuery({
+    queryKey: ['product-dims', cCompany],
+    queryFn: () => getProductDims(cCompany).then(r => r.data),
+    enabled: !!user,
+    placeholderData: keepPreviousData,
+  });
+  const brandOptions: string[] = productDims?.brands ?? [];
+  const categoryOptions: string[] = productDims?.categories ?? [];
+  // True when a brand or category filter is active — gates the "not filtered"
+  // captions on the few views that don't yet honor brand/category.
+  const bcActive = cBrand !== 'all' || cCategory !== 'all';
   const { data: shopsRes, isFetching: sFetch } = useQuery({
     queryKey: ['shops', qDateFrom, qDateTo, cBrand],
     queryFn: () => getShops(qDateFrom, qDateTo, cBrand).then(r => r.data),
@@ -116,8 +124,8 @@ export default function Dashboard() {
   // is already filtered — no client-side re-filter needed, and it tracks the
   // scorecard date range the same way the trend charts do.
   const { data: products = [], isFetching: pFetch } = useQuery({
-    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany],
-    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany).then(r => r.data),
+    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory],
+    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: geoRaw = [] } = useQuery({
@@ -126,8 +134,8 @@ export default function Dashboard() {
     placeholderData: keepPreviousData,
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
-    queryKey: ['discounts', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getDiscounts(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    queryKey: ['discounts', qDateFrom, qDateTo, cBrand, cCategory],
+    queryFn: () => getDiscounts(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: doiRaw = [] } = useQuery({
@@ -136,8 +144,8 @@ export default function Dashboard() {
     enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
   });
   const { data: cancellations = [] } = useQuery({
-    queryKey: ['cancellations', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    queryKey: ['cancellations', qDateFrom, qDateTo, cBrand, cCategory],
+    queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: retention = [] } = useQuery({
@@ -189,11 +197,11 @@ export default function Dashboard() {
   useEffect(() => {
     try {
       localStorage.setItem(FILTERS_KEY, JSON.stringify({
-        cCompany, cAcc, cPlat, cBrand, dateFrom, dateTo, granularity, geoPeriod, activeTab,
+        cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab,
       }));
     } catch { /* storage unavailable (private mode) — skip */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cCompany, cAcc, cPlat, cBrand, dateFrom, dateTo, granularity, geoPeriod, activeTab]);
+  }, [cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab]);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -560,7 +568,7 @@ export default function Dashboard() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
           {user?.isAdmin && (
-            <select onChange={e => { setCCompany(e.target.value); setCAcc('all'); }} value={cCompany} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
+            <select onChange={e => { setCCompany(e.target.value); setCAcc('all'); setCBrand('all'); setCCategory('all'); }} value={cCompany} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
               <option value="all">All Companies</option>
               {companies.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -593,12 +601,18 @@ export default function Dashboard() {
               {platforms.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
-          {SHOW_BRAND_FILTER && (
-            <select onChange={e => setCBrand(e.target.value)} value={cBrand} style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer' }}>
-              <option value="all">All Brands</option>
-              {STUB_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
-            </select>
-          )}
+          <select onChange={e => { setCBrand(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'brand' }); }} value={cBrand}
+            title="Filter by brand (from product catalog)"
+            style={{ background: WHITE, border: `1px solid ${cBrand !== 'all' ? TEAL : BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', maxWidth: 170 }}>
+            <option value="all">All Brands</option>
+            {brandOptions.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+          <select onChange={e => { setCCategory(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'category' }); }} value={cCategory}
+            title="Filter by product category (from product catalog)"
+            style={{ background: WHITE, border: `1px solid ${cCategory !== 'all' ? TEAL : BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', maxWidth: 170 }}>
+            <option value="all">All Categories</option>
+            {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '4px 10px' }}>
             <span style={{ fontSize: 10.5, color: TEXT3 }}>From</span>
             <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'date_from' }); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
@@ -660,7 +674,8 @@ export default function Dashboard() {
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
           {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
           {kpiCard('Repeat Purchase Rate', retRow ? retRow.REPEAT_RATE + '%' : '—',
-                   retRow ? `${retRow.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b')}
+                   bcActive ? 'All brands/categories · trailing 12mo'
+                            : (retRow ? `${retRow.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months'), '#22a06b')}
         </div>
 
         {/* TIME SERIES CHARTS */}
@@ -728,7 +743,7 @@ export default function Dashboard() {
 
         {/* SIDE-BY-SIDE COMPARISON (#2) */}
         {sectionLabel('Comparison', 'comparison')}
-        <ComparePanels user={user} cCompany={cCompany} cAcc={cAcc} cPlat={cPlat} />
+        <ComparePanels user={user} cCompany={cCompany} cAcc={cAcc} cPlat={cPlat} cBrand={cBrand} cCategory={cCategory} />
 
         {/* TABS + TABLES */}
         {sectionLabel('Data Tables', 'data-tables')}
@@ -914,7 +929,7 @@ export default function Dashboard() {
                 {miniExport(geoSorted, 'sales_by_province.csv')}
               </div>
             </div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}{bcActive ? ' · all brands/categories' : ''}</div>
             <ResponsiveContainer width="100%" height={geoShowAll ? Math.max(220, geoData.length * 20) : 220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
@@ -985,6 +1000,7 @@ export default function Dashboard() {
         {SHOW_PERSONAS && (
           <>
             {sectionLabel('Buyer Personas', 'buyer-personas')}
+            {bcActive && <div style={{ fontSize: 10.5, color: TEXT3, marginTop: -4, marginBottom: 10 }}>Note: buyer personas are not filtered by brand/category — showing all brands.</div>}
             <PersonasTab platform={cPlat} company={cCompany} isAdmin={!!user?.isAdmin} />
           </>
         )}

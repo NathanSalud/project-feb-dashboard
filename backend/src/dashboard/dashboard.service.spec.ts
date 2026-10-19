@@ -39,6 +39,6 @@ describe('DashboardService', () => {
   it('passes through the awaited bare array unchanged', async () => {
     const res = await service.getTimeSeries('A', false, '2024-01-01', '2024-02-01');
     expect(res).toEqual([{ COMPANY_NAME: 'A' }]);
-    expect(cache.getTimeSeries).toHaveBeenCalledWith('A', false, '2024-01-01', '2024-02-01');
+    expect(cache.getTimeSeries).toHaveBeenCalledWith('A', false, '2024-01-01', '2024-02-01', undefined, undefined);
   });
 });

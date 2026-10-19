@@ -66,11 +66,15 @@ export const changePassword = (currentPassword: string, newPassword: string) =>
 export const getKpis = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/kpis', { params: { dateFrom, dateTo, brand } });
 
-export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string) =>
-  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo, brand } });
+export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
+  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo, brand, category } });
 
 export const getShops = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/shops', { params: { dateFrom, dateTo, brand } });
+
+// Brand & Category filter options for the dropdowns (scoped to the tenant).
+export const getProductDims = (company?: string) =>
+  api.get('/dashboard/product-dims', { params: { company } });
 
 export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) =>
   api.get('/dashboard/products', { params: { dateFrom, dateTo, brand } });
@@ -79,7 +83,8 @@ export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) 
 // server-side so the ranking always matches the active scorecard date range.
 export const getProductsRanked = (
   dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
-) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company } });
+  brand?: string, category?: string,
+) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
@@ -87,8 +92,8 @@ export const getAccounts = () =>
 export const getGeo = (period = 'overall') =>
   api.get('/dashboard/geo', { params: { period } });
 
-export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string) =>
-  api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand } });
+export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
+  api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand, category } });
 
 export const getDoi = () =>
   api.get('/dashboard/doi');
@@ -96,8 +101,8 @@ export const getDoi = () =>
 export const getPersonas = (period = 'lifetime') =>
   api.get('/dashboard/personas', { params: { period } });
 
-export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string) =>
-  api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand } });
+export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
+  api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand, category } });
 
 export const getRetention = () =>
   api.get('/dashboard/retention');

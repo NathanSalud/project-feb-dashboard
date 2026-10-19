@@ -35,6 +35,19 @@ const IS_VALID_SQL = `f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})`;
 // unfiltered so they behave exactly as before.
 const ONBOARD_FLOOR_SQL = '(a.ONBOARD_DATE IS NULL OR f.ORDER_DATE >= a.ONBOARD_DATE)';
 
+const FACT_SQL     = 'GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED';
+const ACCOUNTS_SQL = 'GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS';
+
+// ── Brand / Category mapping (DIM_PRODUCTS) ──────────────────────────
+// Brand and product category live at SKU grain in DIM_PRODUCTS, joined to the fact
+// on (PLATFORM, SHOP_ID, PRODUCT_SKU = SELLER_SKU) — a key verified unique, so this
+// LEFT JOIN is 1:1 and never fans out / inflates metrics. ~94% of order-item rows
+// match; the rest have no brand/category and drop out only when a specific
+// brand/category is selected. The join is added ONLY when a brand or category filter
+// is active, so the default dashboard paths keep using their lean, cached queries
+// with no dim join and no extra memory.
+const PRODUCT_DIM_JOIN = `LEFT JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_PRODUCTS p ON p.PLATFORM = f.PLATFORM AND p.SHOP_ID = f.SHOP_ID AND p.PRODUCT_SKU = f.SELLER_SKU`;
+
 // ── Buyer-persona scoring config ─────────────────────────────────────
 // Pat's playbook formula, percentile-calibrated: each input is scored 1-10 by
 // decile WITHIN the tenant's own (company, platform), then combined and banded.
@@ -116,6 +129,15 @@ export class CacheService implements OnModuleInit {
   // the same TTL/LRU bounds as the other lazy datasets. Keyed by the full param set.
   private productsRankedCache = new Map<string, { data: any[]; expiresAt: number }>();
   private productsRankedInflight = new Map<string, Promise<any[]>>();
+  // Brand/category-filtered variants of the lazy datasets, cached separately per
+  // (company, brand, category) and only populated when a brand/category filter is
+  // active — so the default (unfiltered) paths above are untouched.
+  private timeseriesBCByCompany = new Map<string, { data: any[]; expiresAt: number }>();
+  private timeseriesBCInflight = new Map<string, Promise<any[]>>();
+  private discountsBCByCompany = new Map<string, { data: any[]; expiresAt: number }>();
+  private discountsBCInflight = new Map<string, Promise<any[]>>();
+  private cancellationsBCByCompany = new Map<string, { data: any[]; expiresAt: number }>();
+  private cancellationsBCInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
@@ -167,6 +189,7 @@ export class CacheService implements OnModuleInit {
         this.refreshPersonas(),
         this.refreshCancellations(),
         this.refreshRetention(),
+        this.refreshProductDims(),
       ]);
       this.lastRefreshed = new Date();
       this.logger.log(`Cache refreshed successfully at ${this.lastRefreshed.toISOString()}`);
@@ -325,6 +348,50 @@ export class CacheService implements OnModuleInit {
     this.logger.log(`Cancellations cached — ${data.length} rows`);
   }
 
+  // Brand/category-aware cancellations (for the Cancellation Rate KPI), same shape
+  // as the eager cancellations query + the DIM_PRODUCTS join and brand/category
+  // WHERE. On-demand only; cached per (company, brand, category).
+  private fetchCancellationsEnriched(company: string | null, brand?: string, category?: string): Promise<any[]> {
+    const bc = this.brandCatWhere(brand, category);
+    const binds: any[] = [];
+    const compSql = company ? ' AND a.COMPANY_NAME = ?' : '';
+    if (company) binds.push(company);
+    binds.push(...bc.binds);
+    return this.snowflake.query(`
+      SELECT
+        a.COMPANY_NAME,
+        a.ACCOUNT_NAME,
+        a.PLATFORM,
+        DATE_TRUNC('DAY', f.ORDER_DATE)                                        AS ORDER_DATE,
+        COUNT(f.ORDER_ITEM_SK)                                                 AS ITEMS,
+        SUM(IFF(f.ITEM_STATUS IN (${CANCELLED_STATUS_SQL}), 1, 0))             AS CANCELLED,
+        SUM(IFF(f.ITEM_STATUS IN (${RETURNED_STATUS_SQL}), 1, 0))              AS RETURNED
+      FROM ${FACT_SQL} f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${PRODUCT_DIM_JOIN}
+      WHERE f.ORDER_DATE >= '2023-01-01'
+      AND a.IS_ACTIVE = TRUE
+      AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+    `, binds);
+  }
+
+  // Distinct brand/category options available per company, for the dashboard
+  // dropdowns. Built once at refresh from DIM_PRODUCTS × active accounts (small).
+  private async refreshProductDims() {
+    const data = await this.snowflake.query(`
+      SELECT DISTINCT a.COMPANY_NAME, p.BRAND_NAME, p.PRODUCT_CATEGORY
+      FROM GDEC_DATAMART.GOLD_SCHEMA.DIM_PRODUCTS p
+      INNER JOIN ${ACCOUNTS_SQL} a ON p.SHOP_ID = a.SHOP_ID
+      WHERE a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+        AND p.BRAND_NAME IS NOT NULL AND p.BRAND_NAME != ''
+        AND p.PRODUCT_CATEGORY IS NOT NULL AND p.PRODUCT_CATEGORY != ''
+    `);
+    this.cache.set('productDims', data);
+    this.logger.log(`Product dims cached — ${data.length} rows`);
+  }
+
   // Builds a repeat-purchase query at a chosen grain. byCompany/byPlatform pick
   // whether that dimension is a real column or collapsed to the RETENTION_ALL
   // sentinel — so we can produce (company,platform), (company,ALL), (ALL,platform)
@@ -432,6 +499,56 @@ export class CacheService implements OnModuleInit {
       GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `, [companyName]);
+  }
+
+  // ── Brand / Category filter helpers ──────────────────────────────
+  // Active only when a specific brand or category is chosen.
+  private brandCatActive(brand?: string, category?: string): boolean {
+    return (!!brand && brand !== 'all') || (!!category && category !== 'all');
+  }
+  // Extra WHERE fragments (and their bind params, in order) for the active filter.
+  private brandCatWhere(brand?: string, category?: string): { sql: string; binds: any[] } {
+    const parts: string[] = [];
+    const binds: any[] = [];
+    if (brand && brand !== 'all')       { parts.push('p.BRAND_NAME = ?');       binds.push(brand); }
+    if (category && category !== 'all') { parts.push('p.PRODUCT_CATEGORY = ?'); binds.push(category); }
+    return { sql: parts.length ? ' AND ' + parts.join(' AND ') : '', binds };
+  }
+
+  // Brand/category-aware timeseries. Same grain and measures as the lean fetchers
+  // (so every timeseries-derived view — scorecards, trends, Account Breakdown, Shop
+  // Performance, platform pie, discount cards — is filtered identically), but with
+  // the DIM_PRODUCTS join and the brand/category WHERE. company=null → all tenants
+  // (admin). Binds are ordered: [company?, brand?, category?].
+  private fetchTimeSeriesEnriched(company: string | null, brand?: string, category?: string): Promise<any[]> {
+    const bc = this.brandCatWhere(brand, category);
+    const binds: any[] = [];
+    const compSql = company ? ' AND a.COMPANY_NAME = ?' : '';
+    if (company) binds.push(company);
+    binds.push(...bc.binds);
+    return this.snowflake.query(`
+      SELECT
+        a.COMPANY_NAME,
+        a.ACCOUNT_NAME,
+        a.PLATFORM,
+        DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
+        COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
+        COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS ITEMS,
+        ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2)                         AS REVENUE,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.ORIGINAL_PRODUCT_PRICE, 0)), 2) AS REVENUE_VALID,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.PLATFORM_DISCOUNT, 0)), 2)              AS PLATFORM_DISCOUNT,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.SELLER_DISCOUNT, 0)), 2)                AS SELLER_DISCOUNT,
+        ROUND(SUM(IFF(${IS_VALID_SQL}, f.PLATFORM_SHIPPING_FEE_DISCOUNT, 0)), 2) AS SHIPPING_DISCOUNT
+      FROM ${FACT_SQL} f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${PRODUCT_DIM_JOIN}
+      WHERE f.ITEM_STATUS IN (${GMV_STATUS_SQL})
+      AND f.ORDER_DATE >= '2023-01-01'
+      AND a.IS_ACTIVE = TRUE
+      AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+    `, binds);
   }
 
   private async refreshShops() {
@@ -603,6 +720,36 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
   `, [companyName]);
 }
 
+// Brand/category-aware discounts (for the Total-Discounts-by-Month chart), same
+// shape as the lean fetchers + the DIM_PRODUCTS join and brand/category WHERE.
+private fetchDiscountsEnriched(company: string | null, brand?: string, category?: string): Promise<any[]> {
+  const bc = this.brandCatWhere(brand, category);
+  const binds: any[] = [];
+  const compSql = company ? ' AND a.COMPANY_NAME = ?' : '';
+  if (company) binds.push(company);
+  binds.push(...bc.binds);
+  return this.snowflake.query(`
+    SELECT
+      a.COMPANY_NAME,
+      a.ACCOUNT_NAME,
+      a.PLATFORM,
+      DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
+      ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
+      ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
+      ROUND(SUM(f.PLATFORM_SHIPPING_FEE_DISCOUNT), 2)  AS SHIPPING_DISCOUNT,
+      ROUND(SUM(f.SELLER_SHIPPING_FEE_DISCOUNT), 2)    AS SELLER_SHIPPING_DISCOUNT
+    FROM ${FACT_SQL} f
+    INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+    ${PRODUCT_DIM_JOIN}
+    WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+    AND f.ORDER_DATE >= '2023-01-01'
+    AND a.IS_ACTIVE = TRUE
+    AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
+  `, binds);
+}
+
   private async refreshAccounts() {
     const data = await this.snowflake.query(`
       SELECT DISTINCT
@@ -756,7 +903,13 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     this.discountsInflight.clear();
     this.productsRankedCache.clear();
     this.productsRankedInflight.clear();
-    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked)');
+    this.timeseriesBCByCompany.clear();
+    this.timeseriesBCInflight.clear();
+    this.discountsBCByCompany.clear();
+    this.discountsBCInflight.clear();
+    this.cancellationsBCByCompany.clear();
+    this.cancellationsBCInflight.clear();
+    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, brand/category variants)');
   }
 
   // ── Top Products (date-aware, cross-platform merged) ─────────────
@@ -769,6 +922,7 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
   private fetchProductsRanked(
     from: string, to: string,
     company: string | null, platform: string | null, account: string | null,
+    brand?: string, category?: string,
   ): Promise<any[]> {
     const where = [
       `f.ITEM_STATUS IN (${GMV_STATUS_SQL})`,
@@ -783,6 +937,10 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     if (company)  { where.push(`a.COMPANY_NAME = ?`); binds.push(company); }
     if (platform) { where.push(`a.PLATFORM = ?`);     binds.push(platform); }
     if (account)  { where.push(`a.ACCOUNT_NAME = ?`); binds.push(account); }
+    // Brand/category: add the DIM_PRODUCTS join + filter only when one is active.
+    const bc = this.brandCatWhere(brand, category);
+    const dimJoin = bc.sql ? PRODUCT_DIM_JOIN : '';
+    if (bc.sql) { where.push(bc.sql.replace(/^ AND /, '')); binds.push(...bc.binds); }
     const sql = `
       SELECT
         f.PRODUCT_NAME,
@@ -795,6 +953,7 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
         ANY_VALUE(f.PLATFORM)                                           AS PLATFORM
       FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${dimJoin}
       WHERE ${where.join(' AND ')}
       GROUP BY f.PRODUCT_NAME
       QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(f.ORIGINAL_PRODUCT_PRICE) DESC) <= 50
@@ -810,13 +969,26 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     return this.filterCompany(data, companyName, isAdmin);
   }
 
-  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-  const data = isAdmin
-    ? await this.runExclusive(() => this.fetchAllTimeSeries()) // all tenants, serialized, uncached
-    : await this.loadWithCache(
-        this.timeseriesByCompany, this.timeseriesInflight,
-        companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
-      );
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  let data: any[];
+  if (this.brandCatActive(brand, category)) {
+    // On-demand brand/category-filtered variant (DIM_PRODUCTS join), cached per
+    // (company, brand, category). Admin scans all tenants, serialized.
+    const key = `${companyName}|${brand || 'all'}|${category || 'all'}`;
+    data = isAdmin
+      ? await this.runExclusive(() => this.fetchTimeSeriesEnriched(null, brand, category))
+      : await this.loadWithCache(
+          this.timeseriesBCByCompany, this.timeseriesBCInflight,
+          key, () => this.fetchTimeSeriesEnriched(companyName, brand, category), 'timeseries-bc',
+        );
+  } else {
+    data = isAdmin
+      ? await this.runExclusive(() => this.fetchAllTimeSeries()) // all tenants, serialized, uncached
+      : await this.loadWithCache(
+          this.timeseriesByCompany, this.timeseriesInflight,
+          companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
+        );
+  }
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
 
@@ -837,7 +1009,7 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
   // other admin loads.
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string },
   ): Promise<any[]> {
     const from = opts.dateFrom || '2023-01-01';
     const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
@@ -846,12 +1018,25 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
       : companyName;
     const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
     const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
-    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*' });
-    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account);
+    const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
+    const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*' });
+    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     return this.loadWithCache(
       this.productsRankedCache, this.productsRankedInflight, key, fetchFn, 'products-ranked',
     );
+  }
+
+  // Distinct brands & categories available to the caller, for the filter dropdowns.
+  // Scoped to the tenant's company (admins get all, or one company when selected).
+  getProductDims(companyName: string, isAdmin: boolean, company?: string) {
+    const rows = (this.cache.get('productDims') || []) as any[];
+    const effCompany = isAdmin ? (company && company !== 'all' ? company : null) : companyName;
+    const scoped = effCompany ? rows.filter(r => r.COMPANY_NAME === effCompany) : rows;
+    const brands = [...new Set(scoped.map(r => r.BRAND_NAME).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+    const categories = [...new Set(scoped.map(r => r.PRODUCT_CATEGORY).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+    return { brands, categories };
   }
 
   getPersonas(companyName: string, isAdmin: boolean, period = PERSONA_DEFAULT_PERIOD) {
@@ -871,13 +1056,24 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
   return this.filterCompany(data, companyName, isAdmin);
 }
 
-async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
-  const data = isAdmin
-    ? await this.runExclusive(() => this.fetchAllDiscounts()) // all tenants, serialized, uncached
-    : await this.loadWithCache(
-        this.discountsByCompany, this.discountsInflight,
-        companyName, c => this.fetchTenantDiscounts(c), 'discounts',
-      );
+async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  let data: any[];
+  if (this.brandCatActive(brand, category)) {
+    const key = `${companyName}|${brand || 'all'}|${category || 'all'}`;
+    data = isAdmin
+      ? await this.runExclusive(() => this.fetchDiscountsEnriched(null, brand, category))
+      : await this.loadWithCache(
+          this.discountsBCByCompany, this.discountsBCInflight,
+          key, () => this.fetchDiscountsEnriched(companyName, brand, category), 'discounts-bc',
+        );
+  } else {
+    data = isAdmin
+      ? await this.runExclusive(() => this.fetchAllDiscounts()) // all tenants, serialized, uncached
+      : await this.loadWithCache(
+          this.discountsByCompany, this.discountsInflight,
+          companyName, c => this.fetchTenantDiscounts(c), 'discounts',
+        );
+  }
   return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
 }
 
@@ -890,7 +1086,18 @@ getDoi(companyName: string, isAdmin: boolean) {
   }
 
   // Cancellation / return counts — date-filterable, same tenant model as KPIs.
-  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  // Brand/category-aware on demand (DIM_PRODUCTS join), else the eager cache.
+  async getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+    if (this.brandCatActive(brand, category)) {
+      const key = `${companyName}|${brand || 'all'}|${category || 'all'}`;
+      const data = isAdmin
+        ? await this.runExclusive(() => this.fetchCancellationsEnriched(null, brand, category))
+        : await this.loadWithCache(
+            this.cancellationsBCByCompany, this.cancellationsBCInflight,
+            key, () => this.fetchCancellationsEnriched(companyName, brand, category), 'cancellations-bc',
+          );
+      return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+    }
     const data = (this.cache.get('cancellations') || []) as any[];
     return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
   }

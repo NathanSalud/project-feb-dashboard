@@ -21,8 +21,10 @@ export class DashboardController {
     @Request() req,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
   ) {
-    return this.dashboardService.getTimeSeries(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+    return this.dashboardService.getTimeSeries(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
   }
 
   @Get('shops')
@@ -65,10 +67,18 @@ export class DashboardController {
     @Query('platform') platform?: string,
     @Query('account') account?: string,
     @Query('company') company?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
   ) {
     return this.dashboardService.getProductsRanked(req.user.companyName, req.user.isAdmin, {
-      dateFrom, dateTo, platform, account, company,
+      dateFrom, dateTo, platform, account, company, brand, category,
     });
+  }
+
+  // Brand & Category options for the filter dropdowns, scoped to the tenant.
+  @Get('product-dims')
+  getProductDims(@Request() req, @Query('company') company?: string) {
+    return this.dashboardService.getProductDims(req.user.companyName, req.user.isAdmin, company);
   }
 
   @Get('accounts')
@@ -86,8 +96,10 @@ export class DashboardController {
     @Request() req,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
   ) {
-    return this.dashboardService.getDiscounts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+    return this.dashboardService.getDiscounts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
   }
 
   @Get('status')
@@ -117,8 +129,10 @@ export class DashboardController {
     @Request() req,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
   ) {
-    return this.dashboardService.getCancellations(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+    return this.dashboardService.getCancellations(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
   }
 
   @Get('retention')

@@ -29,9 +29,9 @@ export class DashboardService {
     return this.cache.getKpis(companyName, isAdmin, dateFrom, dateTo);
   }
 
-  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
     this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
-    return this.cache.getTimeSeries(companyName, isAdmin, dateFrom, dateTo);
+    return this.cache.getTimeSeries(companyName, isAdmin, dateFrom, dateTo, brand, category);
   }
 
   getShops(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, limit?: number, offset?: number) {
@@ -56,10 +56,14 @@ export class DashboardService {
 
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string },
   ) {
     this.validateDates(opts.dateFrom, opts.dateTo);
     return this.cache.getProductsRanked(companyName, isAdmin, opts);
+  }
+
+  getProductDims(companyName: string, isAdmin: boolean, company?: string) {
+    return this.cache.getProductDims(companyName, isAdmin, company);
   }
 
   getAccounts() {
@@ -70,9 +74,9 @@ export class DashboardService {
   return this.cache.getGeo(companyName, isAdmin, period);
 }
 
-  async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
     this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
-    return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo);
+    return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo, brand, category);
   }
 
   getDoi(companyName: string, isAdmin: boolean) {
@@ -83,9 +87,9 @@ export class DashboardService {
     return this.cache.getPersonas(companyName, isAdmin, period);
   }
 
-  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
     this.validateDates(dateFrom, dateTo);
-    return this.cache.getCancellations(companyName, isAdmin, dateFrom, dateTo);
+    return this.cache.getCancellations(companyName, isAdmin, dateFrom, dateTo, brand, category);
   }
 
   getRetention(companyName: string, isAdmin: boolean) {

@@ -160,17 +160,17 @@ function ComparePanel({
 }
 
 export default function ComparePanels({
-  user, cCompany, cAcc, cPlat,
+  user, cCompany, cAcc, cPlat, cBrand, cCategory,
 }: {
-  user: User; cCompany: string; cAcc: string; cPlat: string;
+  user: User; cCompany: string; cAcc: string; cPlat: string; cBrand: string; cCategory: string;
 }) {
   // Fetch the full timeseries once (no date params) and slice per panel in-memory,
-  // so changing either panel's range is instant and never refetches. Keyed only by
-  // company/account/platform-independent — the filters are applied client-side, the
-  // same access model the main dashboard uses.
+  // so changing either panel's range is instant and never refetches. Brand/category
+  // are applied server-side (keyed below) so the panels match the rest of the
+  // dashboard; company/account/platform are applied client-side.
   const { data: tsFull = [], isFetching } = useQuery({
-    queryKey: ['compare-timeseries-full'],
-    queryFn: () => getTimeSeries().then(r => r.data),
+    queryKey: ['compare-timeseries-full', cBrand, cCategory],
+    queryFn: () => getTimeSeries(undefined, undefined, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
     enabled: !!user,
   });
