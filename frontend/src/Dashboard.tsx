@@ -154,19 +154,19 @@ export default function Dashboard() {
     queryFn: () => getDoi().then(r => r.data),
     enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
   });
-  const { data: cancellations = [] } = useQuery({
+  const { data: cancellations = [], isFetching: cxFetch } = useQuery({
     queryKey: ['cancellations', qDateFrom, qDateTo, cBrand, cCategory],
     queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
-  const { data: retention = [] } = useQuery({
+  const { data: retention = [], isFetching: retFetch } = useQuery({
     queryKey: ['retention'],
     queryFn: () => getRetention().then(r => r.data),
     enabled: !!user, // trailing-12mo repeat metrics; company-scoped server-side
   });
   // When a brand/category filter is active, repeat purchase is recomputed on demand
   // for the exact active scope (single row) instead of read from the precompute.
-  const { data: retFiltered } = useQuery({
+  const { data: retFiltered, isFetching: retFFetch } = useQuery({
     queryKey: ['retention-filtered', cCompany, cAcc, cPlat, cBrand, cCategory],
     queryFn: () => getRetentionFiltered(cAcc, cPlat, cBrand, cCategory, cCompany).then(r => r.data),
     enabled: !!user && (cBrand !== 'all' || cCategory !== 'all'),
@@ -562,10 +562,12 @@ export default function Dashboard() {
 
   const ttStyle = { backgroundColor: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT1, fontSize: 11 };
 
-  const kpiCard = (label: string, value: string, sub: string, accent: string) => (
+  // `loading` dims + pulses the value while its data is refetching (e.g. on a
+  // filter change) so a stale number isn't mistaken for the new one.
+  const kpiCard = (label: string, value: string, sub: string, accent: string, loading = false) => (
     <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '16px 20px', borderTop: `3px solid ${accent}`, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
       <div style={{ fontSize: 10, letterSpacing: '.5px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 8 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: TEXT1, marginBottom: 4 }}>{value}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: TEXT1, marginBottom: 4, ...(loading ? { animation: 'gdecPulse 1.1s ease-in-out infinite', color: TEXT3 } : {}) }}>{value}</div>
       <div style={{ fontSize: 10.5, color: TEXT3 }}>{sub}</div>
     </div>
   );
@@ -576,6 +578,7 @@ export default function Dashboard() {
 
   return (
     <div style={{ minHeight: '100vh', background: LIGHT, color: TEXT1, fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 14 }}>
+      <style>{`@keyframes gdecPulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
 
       {/* TOPBAR */}
       <header style={{ position: 'sticky' as const, top: 0, zIndex: 30, background: WHITE, borderBottom: `1px solid ${BORDER}`, padding: '8px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 60, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', flexWrap: 'wrap' as const, gap: 8 }}>
@@ -689,17 +692,18 @@ export default function Dashboard() {
         {/* KPI CARDS */}
         {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px,1fr))', gap: 12, marginBottom: 20 }}>
-          {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL)}
-          {kpiCard('Total NMV',       fmt(totals.nmv),     `Excl. cancelled orders · before discounts · ${nmvPct}% of GMV`, '#14808a')}
-          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD)}
-          {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2)}
-          {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a')}
-          {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7')}
-          {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0')}
-          {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555')}
+          {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL, tFetch)}
+          {kpiCard('Total NMV',       fmt(totals.nmv),     `Excl. cancelled orders · before discounts · ${nmvPct}% of GMV`, '#14808a', tFetch)}
+          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD, tFetch)}
+          {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2, tFetch)}
+          {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a', tFetch)}
+          {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7', tFetch)}
+          {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0', tFetch)}
+          {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555', cxFetch)}
           {kpiCard('Repeat Purchase Rate',
                    (retDisplay && retDisplay.REPEAT_RATE != null) ? retDisplay.REPEAT_RATE + '%' : '—',
-                   (retDisplay && retDisplay.REPEAT_GMV_SHARE != null) ? `${retDisplay.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b')}
+                   (retDisplay && retDisplay.REPEAT_GMV_SHARE != null) ? `${retDisplay.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b',
+                   bcActive ? retFFetch : retFetch)}
         </div>
 
         {/* TIME SERIES CHARTS */}
