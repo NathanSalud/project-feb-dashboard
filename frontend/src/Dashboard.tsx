@@ -578,7 +578,7 @@ export default function Dashboard() {
     <div style={{ minHeight: '100vh', background: LIGHT, color: TEXT1, fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 14 }}>
 
       {/* TOPBAR */}
-      <header style={{ position: 'sticky' as const, top: 0, zIndex: 30, background: WHITE, borderBottom: `1px solid ${BORDER}`, padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 60, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', flexWrap: 'wrap' as const, gap: 8 }}>
+      <header style={{ position: 'sticky' as const, top: 0, zIndex: 30, background: WHITE, borderBottom: `1px solid ${BORDER}`, padding: '8px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: 60, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', flexWrap: 'wrap' as const, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <img src={gdecLogo} alt="GDEC" style={{ height: 36, objectFit: 'contain' }} />
           <div style={{ width: 1, height: 28, background: BORDER }} />
@@ -642,8 +642,10 @@ export default function Dashboard() {
             <span style={{ fontSize: 10.5, color: TEXT3 }}>To</span>
             <input type="date" value={dateTo} onChange={e => { dateToPinned.current = true; setDateTo(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'date_to' }); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
           </div>
-          {isLoading && <span style={{ fontSize: 11, color: TEAL }}>⟳ Loading...</span>}
-          <button onClick={handleLogout} style={{ padding: '5px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 12, fontFamily: 'inherit', color: '#e85555', background: WHITE, cursor: 'pointer' }}>Sign out</button>
+          {/* Fixed-width slot so toggling the loading indicator never reflows the
+              header (previously its appearance pushed "Sign out" off the bar). */}
+          <span style={{ fontSize: 11, color: TEAL, width: 74, flexShrink: 0, whiteSpace: 'nowrap' as const, textAlign: 'right' as const, visibility: isLoading ? 'visible' as const : 'hidden' as const }}>⟳ Loading...</span>
+          <button onClick={handleLogout} style={{ padding: '5px 14px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 12, fontFamily: 'inherit', color: '#e85555', background: WHITE, cursor: 'pointer', flexShrink: 0 }}>Sign out</button>
         </div>
       </header>
 
