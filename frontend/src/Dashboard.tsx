@@ -89,6 +89,12 @@ export default function Dashboard() {
   const [geoPeriod, setGeoPeriod] = useState<string>(savedFilters.geoPeriod ?? 'overall'); // Sales-by-Province time window
   const [geoShowAll, setGeoShowAll] = useState(false);          // Province top-10 vs view-all (#8)
   const [showChangePw, setShowChangePw] = useState(false);
+  // Trends chart-type override: 'mixed' keeps each metric's natural type (flows as
+  // bars, ratios as lines); 'bar'/'line' force every Trends chart to one type so
+  // they read consistently side by side.
+  const [trendType, setTrendType] = useState<'mixed'|'bar'|'line'>('mixed');
+  // Shared search box for the Shop Performance & Top Products tables (DOI keeps its own).
+  const [tableSearch, setTableSearch] = useState('');
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
     queryKey: ['kpis', qDateFrom, qDateTo, cBrand],
@@ -234,10 +240,18 @@ export default function Dashboard() {
   const sortData = (data: any[], col: string) => {
     if (!col) return data;
     return [...data].sort((a, b) => {
-      const av = a[col] ?? 0;
-      const bv = b[col] ?? 0;
-      if (typeof av === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-      return sortDir === 'asc' ? av - bv : bv - av;
+      const av = a[col] ?? '';
+      const bv = b[col] ?? '';
+      // Numeric comparison when BOTH values are numbers (or numeric strings, as
+      // Snowflake sometimes returns money/counts) — otherwise sort as text.
+      const an = typeof av === 'number' ? av : parseFloat(av);
+      const bn = typeof bv === 'number' ? bv : parseFloat(bv);
+      const bothNum = Number.isFinite(an) && Number.isFinite(bn)
+        && String(av).trim() !== '' && String(bv).trim() !== '';
+      if (bothNum) return sortDir === 'asc' ? an - bn : bn - an;
+      return sortDir === 'asc'
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
     });
   };
 
@@ -437,12 +451,37 @@ export default function Dashboard() {
     };
   });
 
+  // Shared table search term (Shop Performance & Top Products).
+  const tableSearchLc = tableSearch.trim().toLowerCase();
+
+  // Shop Performance view: search (shop name / ID) + optional column sort.
+  const shopRowsView = sortData(
+    shopRows.filter((s: any) => !tableSearchLc ||
+      String(s.SHOP_NAME || '').toLowerCase().includes(tableSearchLc) ||
+      String(s.SHOP_ID   || '').toLowerCase().includes(tableSearchLc)),
+    sortCol);
+
+  // Top Products view: add SOB (share of total GMV for the active scope), then
+  // search (product name / SKU) + optional column sort. SOB uses the scorecard GMV
+  // as denominator so it reads as "% of total GMV", not "% of the shown top-50".
+  const sobDenom = totals.revenue > 0
+    ? totals.revenue
+    : (products as any[]).reduce((s: number, p: any) => s + Number(p.REVENUE || 0), 0);
+  const productRows = sortData(
+    (products as any[])
+      .map((p: any) => ({ ...p, SOB: sobDenom > 0 ? (Number(p.REVENUE || 0) / sobDenom) * 100 : 0 }))
+      .filter((p: any) => !tableSearchLc ||
+        String(p.PRODUCT_NAME || '').toLowerCase().includes(tableSearchLc) ||
+        String(p.PRODUCT_SKU  || '').toLowerCase().includes(tableSearchLc)),
+    sortCol);
+
   // Sales by platform pie — date-aware (gross GMV share over the filtered period).
   const platPie = (() => {
     const map: Record<string, number> = {};
     tsFilteredRows.forEach((r: any) => { map[r.PLATFORM] = (map[r.PLATFORM] || 0) + Number(r.REVENUE); });
     return Object.entries(map).map(([name, value]) => ({ name, value }));
   })();
+  const platTotal = platPie.reduce((s, d) => s + d.value, 0);  // for SOB % labels
 
   // Geo data
   const geoSorted = (() => {
@@ -452,13 +491,15 @@ export default function Dashboard() {
       (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
       (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
     );
-    const map: Record<string, number> = {};
+    const map: Record<string, { value: number; orders: number }> = {};
     filtered.forEach((r: any) => {
-      map[r.SHIPPING_PROVINCE] = (map[r.SHIPPING_PROVINCE]||0) + Number(r.REVENUE);
+      if (!map[r.SHIPPING_PROVINCE]) map[r.SHIPPING_PROVINCE] = { value: 0, orders: 0 };
+      map[r.SHIPPING_PROVINCE].value  += Number(r.REVENUE);
+      map[r.SHIPPING_PROVINCE].orders += Number(r.ORDERS || 0);
     });
     return Object.entries(map)
-      .sort((a,b) => b[1]-a[1])
-      .map(([name, value]) => ({name, value}));
+      .sort((a,b) => b[1].value - a[1].value)
+      .map(([name, d]) => ({ name, value: d.value, orders: d.orders }));
   })();
   // Top 10 by default; "View all" (#8) expands to every province.
   const geoData = geoShowAll ? geoSorted : geoSorted.slice(0, 10);
@@ -496,6 +537,7 @@ export default function Dashboard() {
     { name: 'Seller Discount',   value: totals.sd },
     { name: 'Shipping Discount', value: totals.ship },
   ].filter(d => d.value > 0);
+  const discTotal = discPie.reduce((s, d) => s + d.value, 0);  // for discount-share % labels
 
   const fmt  = (v: number) => v>=1e9?'₱'+(v/1e9).toFixed(1)+'B':v>=1e6?'₱'+(v/1e6).toFixed(1)+'M':v>=1e3?'₱'+(v/1e3).toFixed(0)+'K':'₱'+v.toFixed(0);
   const fmtN = (v: number) => v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'K':v.toLocaleString();
@@ -715,6 +757,13 @@ export default function Dashboard() {
               style={{ padding: '4px 10px', borderRadius: 7, border: `1px solid ${granularity===g ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: granularity===g ? `rgba(26,122,138,0.1)` : WHITE, color: granularity===g ? TEAL : TEXT2, textTransform: 'capitalize' as const }}
               title={g !== 'month' ? 'Available in next phase' : ''}>{g}</button>
           ))}
+          <span style={{ width: 1, height: 18, background: BORDER, margin: '0 6px' }} />
+          <span style={{ fontSize: 10, color: TEXT3, letterSpacing: '.4px', textTransform: 'uppercase' as const, marginRight: 4 }}>Chart type</span>
+          {([['mixed','Default'],['bar','Bars'],['line','Lines']] as const).map(([val, lbl]) => (
+            <button key={val} onClick={() => setTrendType(val)}
+              style={{ padding: '4px 10px', borderRadius: 7, border: `1px solid ${trendType===val ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: trendType===val ? `rgba(26,122,138,0.1)` : WHITE, color: trendType===val ? TEAL : TEXT2 }}
+              title={val === 'mixed' ? 'Each metric uses its natural chart type' : `Show every trend as a ${lbl.toLowerCase().replace(/s$/, '')} chart`}>{lbl}</button>
+          ))}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 12, marginBottom: 20 }}>
           {[
@@ -726,6 +775,8 @@ export default function Dashboard() {
             { title: 'Avg Basket Size by Month', key: 'abs',   color: '#0ea5b7', type: 'line', fmt: fmtD, suffix: ' items/order' },
           ].map(({ title, key, color, type, fmt: f, suffix }) => {
             const split = splitPlats.length > 0;
+            // 'mixed' keeps each metric's natural type; otherwise force all to one.
+            const effType = trendType === 'mixed' ? type : trendType;
             return (
             <div key={key} style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
@@ -742,7 +793,7 @@ export default function Dashboard() {
               </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Filtered period</div>
               <ResponsiveContainer width="100%" height={160}>
-                {type === 'line' ? (
+                {effType === 'line' ? (
                   <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                     <XAxis dataKey="month" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
@@ -777,7 +828,7 @@ export default function Dashboard() {
         {sectionLabel('Data Tables', 'data-tables')}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
           {((SHOW_ACCOUNT_BREAKDOWN ? ['breakdown','shops','products','doi'] : ['shops','products','doi']) as Array<'breakdown'|'shops'|'products'|'doi'>).map(t => (
-            <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); posthog.capture('dashboard_tab_selected', { tab: t }); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
+            <button key={t} onClick={() => { setActiveTab(t); setSortCol(''); setSortDir('asc'); setTableSearch(''); posthog.capture('dashboard_tab_selected', { tab: t }); }} style={{ padding: '6px 16px', borderRadius: 8, border: `1px solid ${activeTab===t ? TEAL : BORDER}`, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer', background: activeTab===t ? `rgba(26,122,138,0.08)` : WHITE, color: activeTab===t ? TEAL : TEXT2, fontWeight: activeTab===t ? 600 : 400, textTransform: 'capitalize' as const }}>
               {t === 'breakdown' ? 'Account Breakdown' : t === 'shops' ? 'Shop Performance' : t === 'products' ? 'Top Products' : 'Inventory DOI'}
             </button>
           ))}
@@ -794,6 +845,11 @@ export default function Dashboard() {
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {(activeTab === 'shops' || activeTab === 'products') && (
+              <input value={tableSearch} onChange={e => setTableSearch(e.target.value)}
+                placeholder={activeTab === 'products' ? 'Search product or SKU…' : 'Search shop or ID…'}
+                style={{ padding: '5px 10px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: TEXT1, background: WHITE, width: 200, outline: 'none' }} />
+            )}
             {activeTab === 'doi' && (
               <input value={doiSearch} onChange={e => setDoiSearch(e.target.value)}
                 placeholder="Search product or SKU…"
@@ -805,7 +861,7 @@ export default function Dashboard() {
     <option value="all">All customers</option>
     {doiCustomers.map(c => <option key={c} value={c}>{c}</option>)}
   </select>
-)}<button onClick={() => exportCSV(activeTab==='breakdown'?breakdownRows:activeTab==='shops'?shopRows:activeTab==='products'?products:doiFiltered, `${activeTab}.csv`)}
+)}<button onClick={() => exportCSV(activeTab==='breakdown'?breakdownRows:activeTab==='shops'?shopRowsView:activeTab==='products'?productRows:doiFiltered, `${activeTab}.csv`)}
               style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: `1px solid ${BORDER}`, fontSize: 11, fontFamily: 'inherit', color: '#22c98a', background: WHITE, cursor: 'pointer' }}>
               ⬇ Export CSV
             </button>
@@ -841,12 +897,15 @@ export default function Dashboard() {
             {activeTab === 'shops' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {['Shop','Platform','Shop ID','Orders','Items','AOV','GMV'].map((h,i) => (
-                    <th key={h} style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}>{h}</th>
+                  {[['Shop','SHOP_NAME'],['Platform','PLATFORM'],['Shop ID','SHOP_ID'],['Orders','ORDERS'],['Items','ITEMS'],['AOV','AOV'],['GMV','REVENUE']].map(([h,col],i) => (
+                    <th key={h} onClick={() => handleSort(col)}
+                      style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}>
+                      {h} {sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                    </th>
                   ))}
                 </tr></thead>
                 <tbody>
-                  {shopRows.map((s: any, i: number) => (
+                  {shopRowsView.map((s: any, i: number) => (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontWeight: 500 }}>{s.SHOP_NAME}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}><span style={{ background: `${PLAT_COLORS[s.PLATFORM]||TEAL}18`, color: PLAT_COLORS[s.PLATFORM]||TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{s.PLATFORM}</span></td>
@@ -863,12 +922,16 @@ export default function Dashboard() {
             {activeTab === 'products' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {['Product','Platform','Orders','Units','ASP','GMV'].map((h,i) => (
-                    <th key={h} style={{ fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=2?'right' as const:'left' as const }}>{h}</th>
+                  {[['Product','PRODUCT_NAME'],['Platform','PLATFORM'],['SKU','PRODUCT_SKU'],['Orders','ORDERS'],['Units','UNITS'],['ASP','ASP'],['SOB','SOB'],['GMV','REVENUE']].map(([h,col],i) => (
+                    <th key={h} onClick={() => handleSort(col)}
+                      style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}
+                      title={col === 'SOB' ? 'Share of total GMV for the current filters' : undefined}>
+                      {h} {sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                    </th>
                   ))}
                 </tr></thead>
                 <tbody>
-                  {(products as any[]).map((p: any, i: number) => {
+                  {productRows.map((p: any, i: number) => {
                     const multi = Number(p.PLATFORM_COUNT) > 1;
                     return (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
@@ -876,9 +939,13 @@ export default function Dashboard() {
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}>{multi
                         ? <span title={`Combined across ${p.PLATFORM_COUNT} platforms`} style={{ background: `${TEXT3}18`, color: TEXT2, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>Multi ({p.PLATFORM_COUNT})</span>
                         : <span style={{ background: `${PLAT_COLORS[p.PLATFORM]||TEAL}18`, color: PLAT_COLORS[p.PLATFORM]||TEAL, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{p.PLATFORM}</span>}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT3, fontFamily: 'JetBrains Mono, monospace', fontSize: 10 }}>
+                        {p.PRODUCT_SKU || '—'}{Number(p.SKU_COUNT) > 1 ? <span title={`${p.SKU_COUNT} SKUs under this product name`} style={{ color: TEXT3 }}> +{Number(p.SKU_COUNT) - 1}</span> : null}
+                      </td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmtN(Number(p.ORDERS))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmtN(Number(p.UNITS))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmt(Number(p.ASP))}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{Number(p.SOB || 0).toFixed(1)}%</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const, fontWeight: 600 }}>{fmt(Number(p.REVENUE))}</td>
                     </tr>
                     );
@@ -932,10 +999,13 @@ export default function Dashboard() {
             <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>GMV share · filtered period</div>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
-                <Pie data={platPie} cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value">
+                <Pie data={platPie} cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value"
+                  labelLine={false}
+                  label={({ percent }: any) => `${((percent || 0) * 100).toFixed(1)}%`}>
                   {platPie.map((_, i) => <Cell key={i} fill={PLAT_COLORS[platPie[i]?.name] || PIE_COLORS[i % PIE_COLORS.length]} />)}
                 </Pie>
-                <Tooltip contentStyle={ttStyle} formatter={(v: any) => fmt(Number(v))} />
+                <Tooltip contentStyle={ttStyle}
+                  formatter={(v: any) => `${fmt(Number(v))}${platTotal > 0 ? ` · ${((Number(v) / platTotal) * 100).toFixed(1)}% SOB` : ''}`} />
                 <Legend formatter={(v) => <span style={{ fontSize: 11, color: TEXT2 }}>{v}</span>} />
               </PieChart>
             </ResponsiveContainer>
@@ -963,7 +1033,8 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 10, fill: TEXT3 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => fmt(v)} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: TEXT2 }} axisLine={false} tickLine={false} width={85} />
-                <Tooltip contentStyle={ttStyle} formatter={(v: any) => fmt(Number(v))} />
+                <Tooltip contentStyle={ttStyle}
+                  formatter={(v: any, _n: any, p: any) => [`${fmt(Number(v))} · ${fmtN(Number(p?.payload?.orders || 0))} orders`, 'GMV']} />
                 <Bar dataKey="value" fill={TEAL} radius={[0,3,3,0]} opacity={0.85} />
               </BarChart>
             </ResponsiveContainer>
@@ -995,10 +1066,13 @@ export default function Dashboard() {
             <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>Share of total discount · filtered period</div>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
-                <Pie data={discPie} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value">
+                <Pie data={discPie} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value"
+                  labelLine={false}
+                  label={({ percent }: any) => `${((percent || 0) * 100).toFixed(1)}%`}>
                   {discPie.map((_, i) => <Cell key={i} fill={[TEAL, GOLD, BLUE2][i % 3]} />)}
                 </Pie>
-                <Tooltip contentStyle={ttStyle} formatter={(v: any) => fmt(Number(v))} />
+                <Tooltip contentStyle={ttStyle}
+                  formatter={(v: any) => `${fmt(Number(v))}${discTotal > 0 ? ` · ${((Number(v) / discTotal) * 100).toFixed(1)}% of discount` : ''}`} />
                 <Legend formatter={(v) => <span style={{ fontSize: 11, color: TEXT2 }}>{v}</span>} />
               </PieChart>
             </ResponsiveContainer>

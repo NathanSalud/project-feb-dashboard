@@ -1057,7 +1057,12 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         ROUND(SUM(IFF(${IS_VALID_SQL}, f.ORIGINAL_PRODUCT_PRICE, 0))
               / NULLIF(COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL)), 0), 2) AS ASP,
         COUNT(DISTINCT f.PLATFORM)                                      AS PLATFORM_COUNT,
-        ANY_VALUE(f.PLATFORM)                                           AS PLATFORM
+        ANY_VALUE(f.PLATFORM)                                           AS PLATFORM,
+        -- SKU code for the Top Products table. Rows are merged by PRODUCT_NAME across
+        -- SKUs/platforms, so expose a representative SKU plus a distinct-SKU count the
+        -- UI can use to flag a name that spans more than one SKU.
+        ANY_VALUE(f.SELLER_SKU)                                         AS PRODUCT_SKU,
+        COUNT(DISTINCT f.SELLER_SKU)                                    AS SKU_COUNT
       FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       ${dimJoin}
