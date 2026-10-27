@@ -85,8 +85,8 @@ export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) 
 // server-side so the ranking always matches the active scorecard date range.
 export const getProductsRanked = (
   dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
-  brand?: string, category?: string,
-) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category } });
+  brand?: string, category?: string, all?: boolean,
+) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category, all: all ? 'true' : undefined } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');

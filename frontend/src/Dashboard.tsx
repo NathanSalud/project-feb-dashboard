@@ -99,6 +99,8 @@ export default function Dashboard() {
   // to that whole year or month. The day-level From/To inputs remain for fine control.
   const [jumpYear, setJumpYear] = useState<string>('');
   const [jumpMonth, setJumpMonth] = useState<string>('all');
+  // Top Products: Top 50 (default) vs the full product assortment (server lifts the cap).
+  const [prodShowAll, setProdShowAll] = useState(false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
     queryKey: ['kpis', qDateFrom, qDateTo, cBrand],
@@ -145,8 +147,8 @@ export default function Dashboard() {
   // is already filtered — no client-side re-filter needed, and it tracks the
   // scorecard date range the same way the trend charts do.
   const { data: products = [], isFetching: pFetch } = useQuery({
-    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory],
-    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory).then(r => r.data),
+    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll],
+    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: geoRaw = [] } = useQuery({
@@ -505,9 +507,30 @@ export default function Dashboard() {
   const sobDenom = totals.revenue > 0
     ? totals.revenue
     : (products as any[]).reduce((s: number, p: any) => s + Number(p.REVENUE || 0), 0);
+  // Current warehouse inventory by SKU, from the already-loaded DOI (WMS) data, scoped
+  // to the active company/account. WMS stock is physical, so it's platform-independent
+  // and date-independent (a point-in-time snapshot). Matched to Top Products on SKU —
+  // most WMS SKUs line up with marketplace seller SKUs; products with no WMS match (or
+  // no stock) show "—". Multi-SKU product names reflect only their representative SKU.
+  const invBySku = (() => {
+    const m: Record<string, number> = {};
+    (doiRaw as any[]).forEach((r: any) => {
+      if (cCompany !== 'all' && r.COMPANY_NAME !== cCompany) return;
+      if (cAcc !== 'all' && !((r.ACCOUNT_NAMES || []).includes(cAcc))) return;
+      const sku = String(r.PRODUCT_SKU || '');
+      if (!sku) return;
+      m[sku] = (m[sku] || 0) + Number(r.INVENTORY_QTY || 0);
+    });
+    return m;
+  })();
   const productRows = sortData(
     (products as any[])
-      .map((p: any) => ({ ...p, SOB: sobDenom > 0 ? (Number(p.REVENUE || 0) / sobDenom) * 100 : 0 }))
+      .map((p: any) => ({
+        ...p,
+        SOB: sobDenom > 0 ? (Number(p.REVENUE || 0) / sobDenom) * 100 : 0,
+        INVENTORY: Object.prototype.hasOwnProperty.call(invBySku, String(p.PRODUCT_SKU || ''))
+          ? invBySku[String(p.PRODUCT_SKU)] : null,
+      }))
       .filter((p: any) => !tableSearchLc ||
         String(p.PRODUCT_NAME || '').toLowerCase().includes(tableSearchLc) ||
         String(p.PRODUCT_SKU  || '').toLowerCase().includes(tableSearchLc)),
@@ -899,10 +922,17 @@ export default function Dashboard() {
                 {activeTab === 'breakdown' ? 'Account & Platform Breakdown' : activeTab === 'shops' ? 'Shop Performance' : activeTab === 'products' ? 'Top Products' : 'Inventory & Days of Inventory'}
               </div>
               <div style={{ fontSize: 10.5, color: TEXT3, marginTop: 2 }}>
-                {activeTab === 'breakdown' ? 'GMV, orders and AOV · filtered period' : activeTab === 'shops' ? 'GMV, orders and AOV · filtered period' : activeTab === 'products' ? 'Best selling items by GMV · filtered period' : 'Current stock levels vs. 90-day order velocity · independent of date filters · inventory is at warehouse-customer grain; accounts sharing a warehouse customer show combined inventory'}
+                {activeTab === 'breakdown' ? 'GMV, orders and AOV · filtered period' : activeTab === 'shops' ? 'GMV, orders and AOV · filtered period' : activeTab === 'products' ? (prodShowAll ? 'All products by GMV · filtered period' : 'Top 50 products by GMV · filtered period') : 'Current stock levels vs. 90-day order velocity · independent of date filters · inventory is at warehouse-customer grain; accounts sharing a warehouse customer show combined inventory'}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {activeTab === 'products' && (
+              <button onClick={() => setProdShowAll(v => !v)}
+                title={prodShowAll ? 'Showing the full product assortment' : 'Showing the Top 50 by GMV'}
+                style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${prodShowAll ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: prodShowAll ? 'rgba(26,122,138,0.08)' : WHITE, color: prodShowAll ? TEAL : TEXT2, whiteSpace: 'nowrap' as const }}>
+                {prodShowAll ? 'Top 50' : 'Show all'}
+              </button>
+            )}
             {(activeTab === 'shops' || activeTab === 'products') && (
               <input value={tableSearch} onChange={e => setTableSearch(e.target.value)}
                 placeholder={activeTab === 'products' ? 'Search product or SKU…' : 'Search shop or ID…'}
@@ -980,10 +1010,10 @@ export default function Dashboard() {
             {activeTab === 'products' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
-                  {[['Product','PRODUCT_NAME'],['Platform','PLATFORM'],['SKU','PRODUCT_SKU'],['Orders','ORDERS'],['Units','UNITS'],['ASP','ASP'],['SOB','SOB'],['GMV','REVENUE']].map(([h,col],i) => (
+                  {[['Product','PRODUCT_NAME'],['Platform','PLATFORM'],['SKU','PRODUCT_SKU'],['Orders','ORDERS'],['Units','UNITS'],['ASP','ASP'],['SOB','SOB'],['GMV','REVENUE'],['Inventory','INVENTORY']].map(([h,col],i) => (
                     <th key={h} onClick={() => handleSort(col)}
                       style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}
-                      title={col === 'SOB' ? 'Share of total GMV for the current filters' : undefined}>
+                      title={col === 'SOB' ? 'Share of total GMV for the current filters' : col === 'INVENTORY' ? 'Current warehouse stock (WMS) for this SKU · all platforms' : undefined}>
                       {h} {sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
                     </th>
                   ))}
@@ -1005,6 +1035,7 @@ export default function Dashboard() {
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{fmt(Number(p.ASP))}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{Number(p.SOB || 0).toFixed(1)}%</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const, fontWeight: 600 }}>{fmt(Number(p.REVENUE))}</td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: p.INVENTORY == null ? TEXT3 : TEXT2, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const }}>{p.INVENTORY == null ? '—' : fmtN(Number(p.INVENTORY))}</td>
                     </tr>
                     );
                   })}

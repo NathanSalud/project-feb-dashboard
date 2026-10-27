@@ -56,7 +56,7 @@ export class DashboardService {
 
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean },
   ) {
     this.validateDates(opts.dateFrom, opts.dateTo);
     return this.cache.getProductsRanked(companyName, isAdmin, opts);

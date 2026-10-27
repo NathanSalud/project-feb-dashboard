@@ -1091,8 +1091,11 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   private fetchProductsRanked(
     from: string, to: string,
     company: string | null, platform: string | null, account: string | null,
-    brand?: string, category?: string,
+    brand?: string, category?: string, cap = 50,
   ): Promise<any[]> {
+    // `cap` is set server-side (50 for Top Products, 1000 for the "all assortment"
+    // view) — never from raw user input — so it is safe to inline in the SQL.
+    const rankCap = cap === 1000 ? 1000 : 50;
     const where = [
       `f.ITEM_STATUS IN (${GMV_STATUS_SQL})`,
       `f.ORDER_DATE >= ?`,
@@ -1130,7 +1133,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       ${dimJoin}
       WHERE ${where.join(' AND ')}
       GROUP BY f.PRODUCT_NAME
-      QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(f.ORIGINAL_PRODUCT_PRICE) DESC) <= 50
+      QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(f.ORIGINAL_PRODUCT_PRICE) DESC) <= ${rankCap}
       ORDER BY REVENUE DESC
     `;
     return this.snowflake.query(sql, binds);
@@ -1183,7 +1186,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   // other admin loads.
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean },
   ): Promise<any[]> {
     const from = opts.dateFrom || '2023-01-01';
     const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
@@ -1194,8 +1197,9 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
     const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
     const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
-    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*' });
-    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category);
+    const cap = opts.all ? 1000 : 50;  // "all assortment" view lifts the Top-50 cap
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*', cap });
+    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category, cap);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     return this.loadWithCache(
       this.productsRankedCache, this.productsRankedInflight, key, fetchFn, 'products-ranked',

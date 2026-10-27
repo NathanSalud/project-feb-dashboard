@@ -69,9 +69,10 @@ export class DashboardController {
     @Query('company') company?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('all') all?: string,
   ) {
     return this.dashboardService.getProductsRanked(req.user.companyName, req.user.isAdmin, {
-      dateFrom, dateTo, platform, account, company, brand, category,
+      dateFrom, dateTo, platform, account, company, brand, category, all: all === 'true',
     });
   }
 
