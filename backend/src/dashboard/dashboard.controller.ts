@@ -176,4 +176,21 @@ export class DashboardController {
       account, platform, brand, category, company,
     });
   }
+
+  // New vs existing buyers for the active scope + date range (single aggregated row).
+  @Get('new-vs-existing')
+  getNewVsExisting(
+    @Request() req,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('platform') platform?: string,
+    @Query('account') account?: string,
+    @Query('company') company?: string,
+    @Query('brand') brand?: string,
+    @Query('category') category?: string,
+  ) {
+    return this.dashboardService.getNewVsExisting(req.user.companyName, req.user.isAdmin, {
+      dateFrom, dateTo, platform, account, company, brand, category,
+    });
+  }
 }

@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getRetentionFiltered, getProductDims } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getRetentionFiltered, getProductDims, getNewVsExisting } from './api';
 import PersonasTab from './PersonasTab';
 import ComparePanels from './ComparePanels';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -95,6 +95,10 @@ export default function Dashboard() {
   const [trendType, setTrendType] = useState<'mixed'|'bar'|'line'>('mixed');
   // Shared search box for the Shop Performance & Top Products tables (DOI keeps its own).
   const [tableSearch, setTableSearch] = useState('');
+  // Date quick-jump: pick a Year (and optionally a Month) to snap the From–To range
+  // to that whole year or month. The day-level From/To inputs remain for fine control.
+  const [jumpYear, setJumpYear] = useState<string>('');
+  const [jumpMonth, setJumpMonth] = useState<string>('all');
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
     queryKey: ['kpis', qDateFrom, qDateTo, cBrand],
@@ -178,6 +182,13 @@ export default function Dashboard() {
     enabled: !!user && (cBrand !== 'all' || cCategory !== 'all'),
     placeholderData: keepPreviousData,
   });
+  // New vs existing buyers for the active scope + date range (date-aware, on demand).
+  const { data: newVsExisting, isFetching: nveFetch } = useQuery({
+    queryKey: ['new-vs-existing', qDateFrom, qDateTo, cCompany, cAcc, cPlat, cBrand, cCategory],
+    queryFn: () => getNewVsExisting(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory).then(r => r.data),
+    enabled: !!user,
+    placeholderData: keepPreviousData,
+  });
   const doiCustomers = [...new Set((doiRaw as any[]).map(r => r.CUSTOMER_ID))].sort();
   // Rows are tagged server-side with COMPANY_NAME/ACCOUNT_NAMES. Tenants filter by the
   // global account selector (cAcc); admins keep the raw CUST_ID dropdown.
@@ -253,6 +264,33 @@ export default function Dashboard() {
         ? String(av).localeCompare(String(bv))
         : String(bv).localeCompare(String(av));
     });
+  };
+
+  // Date quick-jump helpers. Years run 2023 → current year; a month of 'all' snaps the
+  // range to the whole year, otherwise to that single month. Both ends are clamped to
+  // today so a partly-future period never over-reaches the available data.
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const curYear = new Date().getFullYear();
+  const jumpYears = Array.from({ length: curYear - 2023 + 1 }, (_, i) => String(2023 + i));
+  const applyJump = (year: string, month: string) => {
+    if (!year) return;
+    const todayS = new Date().toISOString().slice(0, 10);
+    let from: string, to: string;
+    if (month === 'all') {
+      from = `${year}-01-01`; to = `${year}-12-31`;
+    } else {
+      const mi = Number(month);                       // 0-11
+      const mm = String(mi + 1).padStart(2, '0');
+      const last = new Date(Number(year), mi + 1, 0).getDate();
+      from = `${year}-${mm}-01`;
+      to   = `${year}-${mm}-${String(last).padStart(2, '0')}`;
+    }
+    if (from > todayS) from = todayS;
+    if (to   > todayS) to   = todayS;
+    if (from > to) from = to;
+    dateToPinned.current = true;
+    setDateFrom(from); setDateTo(to);
+    posthog.capture('dashboard_date_quickjump', { year, month });
   };
 
 
@@ -687,6 +725,20 @@ export default function Dashboard() {
             <span style={{ fontSize: 10.5, color: TEXT3 }}>To</span>
             <input type="date" value={dateTo} onChange={e => { dateToPinned.current = true; setDateTo(e.target.value); posthog.capture('dashboard_filter_updated', { filter: 'date_to' }); }} style={{ background: 'transparent', border: 'none', color: TEXT1, fontFamily: 'inherit', fontSize: 12, outline: 'none', width: 110 }} />
           </div>
+          {/* Quick-jump: snap the range to a whole year or month (day-level From/To above still works). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '4px 8px' }} title="Jump the date range to a whole year or month">
+            <span style={{ fontSize: 10.5, color: TEXT3 }}>Jump</span>
+            <select value={jumpYear} onChange={e => { const y = e.target.value; setJumpYear(y); if (y) applyJump(y, jumpMonth); }}
+              style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '3px 6px', borderRadius: 6, cursor: 'pointer' }}>
+              <option value="">Year</option>
+              {jumpYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <select value={jumpMonth} onChange={e => { const m = e.target.value; const y = jumpYear || String(curYear); setJumpYear(y); setJumpMonth(m); applyJump(y, m); }}
+              style={{ background: WHITE, border: `1px solid ${BORDER}`, color: TEXT1, fontFamily: 'inherit', fontSize: 12, padding: '3px 6px', borderRadius: 6, cursor: 'pointer' }}>
+              <option value="all">All months</option>
+              {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
+            </select>
+          </div>
           {/* Fixed-width slot so toggling the loading indicator never reflows the
               header (previously its appearance pushed "Sign out" off the bar). */}
           <span style={{ fontSize: 11, color: TEAL, width: 74, flexShrink: 0, whiteSpace: 'nowrap' as const, textAlign: 'right' as const, visibility: isLoading ? 'visible' as const : 'hidden' as const }}>⟳ Loading...</span>
@@ -746,6 +798,12 @@ export default function Dashboard() {
                    (retDisplay && retDisplay.REPEAT_RATE != null) ? retDisplay.REPEAT_RATE + '%' : '—',
                    (retDisplay && retDisplay.REPEAT_GMV_SHARE != null) ? `${retDisplay.REPEAT_GMV_SHARE}% of GMV · trailing 12mo` : 'Trailing 12 months', '#22a06b',
                    bcActive ? retFFetch : retFetch)}
+          {kpiCard('New vs Returning Buyers',
+                   (newVsExisting && newVsExisting.BUYERS > 0 && newVsExisting.NEW_RATE != null) ? `${newVsExisting.NEW_RATE}% new` : '—',
+                   (newVsExisting && newVsExisting.BUYERS > 0)
+                     ? `${newVsExisting.EXISTING_RATE}% returning · ${fmtN(Number(newVsExisting.BUYERS))} buyers in range`
+                     : 'First purchase in the selected range = new', '#6b8cce',
+                   nveFetch)}
         </div>
 
         {/* TIME SERIES CHARTS */}

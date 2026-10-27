@@ -106,6 +106,14 @@ export class DashboardService {
     return this.cache.getRetentionFiltered(companyName, isAdmin, opts);
   }
 
+  async getNewVsExisting(
+    companyName: string, isAdmin: boolean,
+    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string },
+  ) {
+    this.validateDates(opts.dateFrom, opts.dateTo);
+    return this.cache.getNewVsExisting(companyName, isAdmin, opts);
+  }
+
   getStatus() {
     return this.cache.getStatus();
   }

@@ -114,4 +114,10 @@ export const getRetentionFiltered = (
   account?: string, platform?: string, brand?: string, category?: string, company?: string,
 ) => api.get('/dashboard/retention-filtered', { params: { account, platform, brand, category, company } });
 
+// New vs existing buyers for the active scope + date range (single aggregated row).
+export const getNewVsExisting = (
+  dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
+  brand?: string, category?: string,
+) => api.get('/dashboard/new-vs-existing', { params: { dateFrom, dateTo, platform, account, company, brand, category } });
+
 export default api;

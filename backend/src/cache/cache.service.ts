@@ -145,6 +145,10 @@ export class CacheService implements OnModuleInit {
   private retentionBCInflight = new Map<string, Promise<any[]>>();
   private personasBCCache = new Map<string, { data: any[]; expiresAt: number }>();
   private personasBCInflight = new Map<string, Promise<any[]>>();
+  // New-vs-existing buyers: date-range dependent, computed on demand and cached per
+  // (company, from, to, platform, account, brand, category).
+  private newVsExistingCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private newVsExistingInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
@@ -755,6 +759,62 @@ private fetchRetentionFiltered(
   `, binds);
 }
 
+// New vs existing buyers for the active scope over the selected date range.
+// A buyer active in [from, to] is "new" when their FIRST-EVER order in scope
+// (2023 onward) falls within that range, otherwise "existing" (acquired earlier,
+// purchasing again now). Returns one aggregated row. Date-range dependent, so it
+// cannot use the nightly precompute — computed on demand like retention-filtered.
+private fetchNewVsExisting(
+  company: string | null, account: string | null, platform: string | null,
+  from: string, to: string, brand?: string, category?: string,
+): Promise<any[]> {
+  const bc = this.brandCatWhere(brand, category);
+  const scope: string[] = [];
+  const scopeBinds: any[] = [];
+  if (company)  { scope.push('a.COMPANY_NAME = ?'); scopeBinds.push(company); }
+  if (account)  { scope.push('a.ACCOUNT_NAME = ?'); scopeBinds.push(account); }
+  if (platform) { scope.push('a.PLATFORM = ?');     scopeBinds.push(platform); }
+  const scopeSql = scope.length ? ' AND ' + scope.join(' AND ') : '';
+  const buyerGuard = `f.BUYER_ID IS NOT NULL AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')`;
+  // Bind order must match the ? order in the SQL below.
+  const binds: any[] = [
+    ...scopeBinds, ...bc.binds,              // firsts CTE
+    from, to, ...scopeBinds, ...bc.binds,    // active CTE
+    from, from, from, from,                  // final SELECT (new/existing counts & rates)
+  ];
+  return this.snowflake.query(`
+    WITH firsts AS (
+      SELECT f.BUYER_ID AS SHOPPER, MIN(f.ORDER_DATE) AS first_order
+      FROM ${FACT_SQL} f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${PRODUCT_DIM_JOIN}
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+        AND f.ORDER_DATE >= '2023-01-01'
+        AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+        AND ${buyerGuard}${scopeSql}${bc.sql}
+      GROUP BY f.BUYER_ID
+    ),
+    active AS (
+      SELECT DISTINCT f.BUYER_ID AS SHOPPER
+      FROM ${FACT_SQL} f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      ${PRODUCT_DIM_JOIN}
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+        AND f.ORDER_DATE >= ? AND f.ORDER_DATE <= ?
+        AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+        AND ${buyerGuard}${scopeSql}${bc.sql}
+    )
+    SELECT
+      COUNT(*)                                                                 AS BUYERS,
+      SUM(IFF(fr.first_order >= ?, 1, 0))                                       AS NEW_BUYERS,
+      SUM(IFF(fr.first_order <  ?, 1, 0))                                       AS EXISTING_BUYERS,
+      ROUND(100.0 * SUM(IFF(fr.first_order >= ?, 1, 0)) / NULLIF(COUNT(*),0), 1) AS NEW_RATE,
+      ROUND(100.0 * SUM(IFF(fr.first_order <  ?, 1, 0)) / NULLIF(COUNT(*),0), 1) AS EXISTING_RATE
+    FROM active ac
+    INNER JOIN firsts fr ON ac.SHOPPER = fr.SHOPPER
+  `, binds);
+}
+
 // Brand/category-aware personas (RFM), on demand. Same scoring as personaQuery but
 // with the DIM_PRODUCTS join + brand/category filter inside the shopper CTE. Note:
 // the ≥500-buyer segment gate still applies, so narrow brand filters may leave few
@@ -1016,6 +1076,8 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     this.retentionBCInflight.clear();
     this.personasBCCache.clear();
     this.personasBCInflight.clear();
+    this.newVsExistingCache.clear();
+    this.newVsExistingInflight.clear();
     this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, brand/category variants)');
   }
 
@@ -1282,6 +1344,27 @@ getDoi(companyName: string, isAdmin: boolean) {
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     const rows = await this.loadWithCache(this.retentionBCCache, this.retentionBCInflight, key, fetchFn, 'retention-bc');
     return rows[0] || { BUYERS: 0, REPEAT_BUYERS: 0, REPEAT_RATE: 0, REPEAT_GMV_SHARE: 0, AVG_ORDERS: 0 };
+  }
+
+  // New vs existing buyers for the active scope + date range, computed on demand.
+  // Returns one aggregated row. Tenants are pinned to their own company; admins may
+  // scope to one company or across all (the all-company scan is serialized).
+  async getNewVsExisting(
+    companyName: string, isAdmin: boolean,
+    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string },
+  ) {
+    const from = opts.dateFrom || '2023-01-01';
+    const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
+    const effCompany = isAdmin ? (opts.company && opts.company !== 'all' ? opts.company : null) : companyName;
+    const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
+    const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
+    const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
+    const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*' });
+    const run = () => this.fetchNewVsExisting(effCompany, account, platform, from, to, brand, category);
+    const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
+    const rows = await this.loadWithCache(this.newVsExistingCache, this.newVsExistingInflight, key, fetchFn, 'new-vs-existing');
+    return rows[0] || { BUYERS: 0, NEW_BUYERS: 0, EXISTING_BUYERS: 0, NEW_RATE: 0, EXISTING_RATE: 0 };
   }
 
   getStatus() {
