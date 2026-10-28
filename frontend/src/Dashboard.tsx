@@ -37,6 +37,18 @@ const GEO_PERIODS = [
   { key: '24m',     label: 'Past 24 mo', note: 'past 24 months' },
 ] as const;
 
+// Shift a YYYY-MM-DD date by whole years (used for the last-year KPI comparison).
+// Clamps to the last valid day of the target month so Feb-29 → Feb-28 in a
+// non-leap year, keeping the result a valid date string.
+function shiftYears(d: string, years: number): string {
+  if (!d) return d;
+  const [y, m, day] = d.split('-').map(Number);
+  const ty = y + years;
+  const maxDay = new Date(ty, m, 0).getDate(); // day 0 of month m+1 = last day of month m
+  const cd = Math.min(day, maxDay);
+  return `${ty}-${String(m).padStart(2, '0')}-${String(cd).padStart(2, '0')}`;
+}
+
 export default function Dashboard() {
   // Hidden for now — insights analyze all 2023–2026 data regardless of the user's date
   // filter, so they read as too broad. Re-enable once /insights/generate respects the
@@ -110,6 +122,15 @@ export default function Dashboard() {
   const { data: timeSeries = [], isFetching: tFetch } = useQuery({
     queryKey: ['timeseries', qDateFrom, qDateTo, cBrand, cCategory],
     queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
+    placeholderData: keepPreviousData,
+  });
+  // Last-year comparison: the same span shifted back one year, reusing the existing
+  // timeseries endpoint. Feeds the YoY (vs LY) deltas on the headline KPI cards.
+  const lyDateFrom = shiftYears(qDateFrom, -1);
+  const lyDateTo   = shiftYears(qDateTo, -1);
+  const { data: lyTimeSeries = [] } = useQuery({
+    queryKey: ['timeseries-ly', lyDateFrom, lyDateTo, cBrand, cCategory],
+    queryFn: () => getTimeSeries(lyDateFrom, lyDateTo, cBrand, cCategory).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   // Brand & Category filter options, scoped to the selected company (admins) /
@@ -353,6 +374,37 @@ export default function Dashboard() {
   // of gross GMV, i.e. the non-cancelled share.
   const discRate = totals.revValid > 0 ? (((totals.pd + totals.sd) / totals.revValid) * 100).toFixed(1) : '0.0';
   const nmvPct   = totals.revenue > 0 ? ((totals.nmv / totals.revenue) * 100).toFixed(1) : '0.0';
+
+  // ── Year-over-year (vs last year) deltas for the headline KPI cards ──
+  // Re-aggregate the last-year window through the exact same company/platform/account
+  // filter as the current period, then express each metric as a % change vs LY.
+  const aggTs = (rows: any[]) => (rows as any[])
+    .filter((r: any) =>
+      companyMatch(r) &&
+      (cPlat === 'all' || r.PLATFORM === cPlat) &&
+      (cAcc  === 'all' || r.ACCOUNT_NAME === cAcc) &&
+      (user?.isAdmin || user?.accountNames?.includes(r.ACCOUNT_NAME))
+    )
+    .reduce((acc: any, r: any) => ({
+      revenue:  (acc.revenue  || 0) + Number(r.REVENUE),
+      revValid: (acc.revValid || 0) + Number(r.REVENUE_VALID),
+      orders:   (acc.orders   || 0) + Number(r.ORDERS),
+      items:    (acc.items    || 0) + Number(r.ITEMS),
+    }), {});
+  const ly     = aggTs(lyTimeSeries as any[]);
+  const lyAov  = (ly.orders || 0) > 0 ? (ly.revenue || 0) / ly.orders : 0;
+  const lyAbs  = (ly.orders || 0) > 0 ? (ly.items   || 0) / ly.orders : 0;
+  const curAbs = totals.orders > 0 ? totals.items / totals.orders : 0;
+  // % change vs LY; null when there is no comparable LY base (avoids ÷0 / ∞) so the
+  // card simply shows no delta rather than a misleading figure.
+  const yoy = (cur: number, prev: number): number | null =>
+    prev > 0 ? ((cur - prev) / prev) * 100 : null;
+  const dGmv    = yoy(totals.revenue, ly.revenue  || 0);
+  const dNmv    = yoy(totals.nmv,     ly.revValid || 0);
+  const dOrders = yoy(totals.orders,  ly.orders   || 0);
+  const dAov    = yoy(aov,            lyAov);
+  const dItems  = yoy(totals.items,   ly.items    || 0);
+  const dAbs    = yoy(curAbs,         lyAbs);
 
   // ── Cancellation rate (date-aware; server already date-filtered) ──
   const cxAgg = (cancellations as any[])
@@ -667,11 +719,18 @@ export default function Dashboard() {
 
   // `loading` dims + pulses the value while its data is refetching (e.g. on a
   // filter change) so a stale number isn't mistaken for the new one.
-  const kpiCard = (label: string, value: string, sub: string, accent: string, loading = false) => (
+  const kpiCard = (label: string, value: string, sub: string, accent: string, loading = false, deltaPct?: number | null) => (
     <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: '16px 20px', borderTop: `3px solid ${accent}`, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
       <div style={{ fontSize: 10, letterSpacing: '.5px', textTransform: 'uppercase' as const, color: TEXT3, marginBottom: 8 }}>{label}</div>
       <div style={{ fontSize: 24, fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: TEXT1, marginBottom: 4, ...(loading ? { animation: 'gdecPulse 1.1s ease-in-out infinite', color: TEXT3 } : {}) }}>{value}</div>
-      <div style={{ fontSize: 10.5, color: TEXT3 }}>{sub}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const }}>
+        <div style={{ fontSize: 10.5, color: TEXT3 }}>{sub}</div>
+        {deltaPct != null && (
+          <div title="Change vs the same period last year" style={{ fontSize: 10.5, fontWeight: 700, color: deltaPct >= 0 ? '#22a06b' : '#e85555', whiteSpace: 'nowrap' as const }}>
+            {deltaPct >= 0 ? '▲' : '▼'} {Math.abs(deltaPct).toFixed(1)}% vs LY
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -809,12 +868,12 @@ export default function Dashboard() {
         {/* KPI CARDS */}
         {sectionLabel('Performance Overview', 'performance-overview')}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px,1fr))', gap: 12, marginBottom: 20 }}>
-          {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL, tFetch)}
-          {kpiCard('Total NMV',       fmt(totals.nmv),     `Excl. cancelled orders · before discounts · ${nmvPct}% of GMV`, '#14808a', tFetch)}
-          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD, tFetch)}
-          {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2, tFetch)}
-          {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a', tFetch)}
-          {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7', tFetch)}
+          {kpiCard('Total GMV',       fmt(totals.revenue), 'Gross · incl. cancelled orders', TEAL, tFetch, dGmv)}
+          {kpiCard('Total NMV',       fmt(totals.nmv),     `Excl. cancelled orders · before discounts · ${nmvPct}% of GMV`, '#14808a', tFetch, dNmv)}
+          {kpiCard('Total Orders',    fmtN(totals.orders), 'Unique platform orders · excl. cancelled', GOLD, tFetch, dOrders)}
+          {kpiCard('Avg Order Value', fmt(aov),            'GMV ÷ orders',                         BLUE2, tFetch, dAov)}
+          {kpiCard('Items Sold',      fmtN(totals.items),  'Units sold · excl. cancelled',             '#22c98a', tFetch, dItems)}
+          {kpiCard('Avg Basket Size', totals.orders > 0 ? (totals.items/totals.orders).toFixed(2) : '—', 'Items ÷ orders', '#0ea5b7', tFetch, dAbs)}
           {kpiCard('Discount Rate',   discRate + '%',       'Of original product price',               '#9b6ff0', tFetch)}
           {kpiCard('Cancellation Rate', cancelRate + '%',   'Share of items cancelled',                '#e85555', cxFetch)}
           {kpiCard('Repeat Purchase Rate',
@@ -1010,6 +1069,7 @@ export default function Dashboard() {
             {activeTab === 'products' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
+                  <th title="Rank by the current sort (GMV by default)" style={{ userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 12px 10px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right' as const, width: 34 }}>#</th>
                   {[['Product','PRODUCT_NAME'],['Platform','PLATFORM'],['SKU','PRODUCT_SKU'],['Orders','ORDERS'],['Units','UNITS'],['ASP','ASP'],['SOB','SOB'],['GMV','REVENUE'],['Inventory','INVENTORY']].map(([h,col],i) => (
                     <th key={h} onClick={() => handleSort(col)}
                       style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}
@@ -1023,6 +1083,7 @@ export default function Dashboard() {
                     const multi = Number(p.PLATFORM_COUNT) > 1;
                     return (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
+                      <td style={{ padding: '9px 12px 9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT3, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const, width: 34 }}>{i + 1}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{p.PRODUCT_NAME}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}>{multi
                         ? <span title={`Combined across ${p.PLATFORM_COUNT} platforms`} style={{ background: `${TEXT3}18`, color: TEXT2, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>Multi ({p.PLATFORM_COUNT})</span>
