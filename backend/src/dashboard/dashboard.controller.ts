@@ -12,8 +12,9 @@ export class DashboardController {
     @Request() req,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.dashboardService.getKpis(req.user.companyName, req.user.isAdmin, dateFrom, dateTo);
+    return this.dashboardService.getKpis(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, includeInactive === 'true');
   }
 
   @Get('timeseries')
@@ -23,8 +24,9 @@ export class DashboardController {
     @Query('dateTo') dateTo?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.dashboardService.getTimeSeries(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
+    return this.dashboardService.getTimeSeries(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category, includeInactive === 'true');
   }
 
   @Get('shops')
@@ -34,11 +36,13 @@ export class DashboardController {
     @Query('dateTo') dateTo?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
     return this.dashboardService.getShops(
       req.user.companyName, req.user.isAdmin, dateFrom, dateTo,
       limit ? parseInt(limit) : undefined,
       offset ? parseInt(offset) : undefined,
+      includeInactive === 'true',
     );
   }
 
@@ -70,9 +74,10 @@ export class DashboardController {
     @Query('brand') brand?: string,
     @Query('category') category?: string,
     @Query('all') all?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
     return this.dashboardService.getProductsRanked(req.user.companyName, req.user.isAdmin, {
-      dateFrom, dateTo, platform, account, company, brand, category, all: all === 'true',
+      dateFrom, dateTo, platform, account, company, brand, category, all: all === 'true', includeInactive: includeInactive === 'true',
     });
   }
 
@@ -103,8 +108,9 @@ export class DashboardController {
     @Query('period') period?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period, brand, category);
+    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period, brand, category, includeInactive === 'true');
   }
 
   @Get('discounts')
@@ -114,8 +120,9 @@ export class DashboardController {
     @Query('dateTo') dateTo?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.dashboardService.getDiscounts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
+    return this.dashboardService.getDiscounts(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category, includeInactive === 'true');
   }
 
   @Get('status')
@@ -154,13 +161,14 @@ export class DashboardController {
     @Query('dateTo') dateTo?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
-    return this.dashboardService.getCancellations(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category);
+    return this.dashboardService.getCancellations(req.user.companyName, req.user.isAdmin, dateFrom, dateTo, brand, category, includeInactive === 'true');
   }
 
   @Get('retention')
-  getRetention(@Request() req) {
-    return this.dashboardService.getRetention(req.user.companyName, req.user.isAdmin);
+  getRetention(@Request() req, @Query('includeInactive') includeInactive?: string) {
+    return this.dashboardService.getRetention(req.user.companyName, req.user.isAdmin, includeInactive === 'true');
   }
 
   // Brand/category-aware repeat purchase for the active scope (single aggregated row).
@@ -172,9 +180,10 @@ export class DashboardController {
     @Query('brand') brand?: string,
     @Query('category') category?: string,
     @Query('company') company?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
     return this.dashboardService.getRetentionFiltered(req.user.companyName, req.user.isAdmin, {
-      account, platform, brand, category, company,
+      account, platform, brand, category, company, includeInactive: includeInactive === 'true',
     });
   }
 
@@ -189,9 +198,10 @@ export class DashboardController {
     @Query('company') company?: string,
     @Query('brand') brand?: string,
     @Query('category') category?: string,
+    @Query('includeInactive') includeInactive?: string,
   ) {
     return this.dashboardService.getNewVsExisting(req.user.companyName, req.user.isAdmin, {
-      dateFrom, dateTo, platform, account, company, brand, category,
+      dateFrom, dateTo, platform, account, company, brand, category, includeInactive: includeInactive === 'true',
     });
   }
 }

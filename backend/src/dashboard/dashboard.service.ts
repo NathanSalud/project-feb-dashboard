@@ -24,19 +24,19 @@ export class DashboardService {
       throw new BadRequestException('dateFrom cannot be later than dateTo');
   }
 
-  getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, includeInactive?: boolean) {
     this.validateDates(dateFrom, dateTo);
-    return this.cache.getKpis(companyName, isAdmin, dateFrom, dateTo);
+    return this.cache.getKpis(companyName, isAdmin, dateFrom, dateTo, includeInactive);
   }
 
-  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
     this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
-    return this.cache.getTimeSeries(companyName, isAdmin, dateFrom, dateTo, brand, category);
+    return this.cache.getTimeSeries(companyName, isAdmin, dateFrom, dateTo, brand, category, includeInactive);
   }
 
-  getShops(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, limit?: number, offset?: number) {
+  getShops(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, limit?: number, offset?: number, includeInactive?: boolean) {
     this.validateDates(dateFrom, dateTo);
-    const data  = this.cache.getShops(companyName, isAdmin, dateFrom, dateTo);
+    const data  = this.cache.getShops(companyName, isAdmin, dateFrom, dateTo, includeInactive);
     const total = data.length;
     const paginated = limit !== undefined
       ? data.slice(offset || 0, (offset || 0) + limit)
@@ -56,7 +56,7 @@ export class DashboardService {
 
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean },
   ) {
     this.validateDates(opts.dateFrom, opts.dateTo);
     return this.cache.getProductsRanked(companyName, isAdmin, opts);
@@ -73,13 +73,13 @@ export class DashboardService {
     return this.cache.getAccounts();
   }
 
-  getGeo(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string) {
-  return this.cache.getGeo(companyName, isAdmin, period, brand, category);
+  getGeo(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string, includeInactive?: boolean) {
+  return this.cache.getGeo(companyName, isAdmin, period, brand, category, includeInactive);
 }
 
-  async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
     this.validateDates(dateFrom, dateTo); // runs before any Snowflake fetch
-    return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo, brand, category);
+    return this.cache.getDiscounts(companyName, isAdmin, dateFrom, dateTo, brand, category, includeInactive);
   }
 
   getDoi(companyName: string, isAdmin: boolean) {
@@ -90,25 +90,25 @@ export class DashboardService {
     return this.cache.getPersonas(companyName, isAdmin, period, brand, category);
   }
 
-  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
     this.validateDates(dateFrom, dateTo);
-    return this.cache.getCancellations(companyName, isAdmin, dateFrom, dateTo, brand, category);
+    return this.cache.getCancellations(companyName, isAdmin, dateFrom, dateTo, brand, category, includeInactive);
   }
 
-  getRetention(companyName: string, isAdmin: boolean) {
-    return this.cache.getRetention(companyName, isAdmin);
+  getRetention(companyName: string, isAdmin: boolean, includeInactive?: boolean) {
+    return this.cache.getRetention(companyName, isAdmin, includeInactive);
   }
 
   getRetentionFiltered(
     companyName: string, isAdmin: boolean,
-    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string },
+    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string; includeInactive?: boolean },
   ) {
     return this.cache.getRetentionFiltered(companyName, isAdmin, opts);
   }
 
   async getNewVsExisting(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string },
+    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string; includeInactive?: boolean },
   ) {
     this.validateDates(opts.dateFrom, opts.dateTo);
     return this.cache.getNewVsExisting(companyName, isAdmin, opts);

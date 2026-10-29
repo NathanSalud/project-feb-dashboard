@@ -113,15 +113,19 @@ export default function Dashboard() {
   const [jumpMonth, setJumpMonth] = useState<string>('all');
   // Top Products: Top 50 (default) vs the full product assortment (server lifts the cap).
   const [prodShowAll, setProdShowAll] = useState(false);
+  // Store scope: Active stores only (default) vs All historical stores — the latter
+  // includes closed/inactive shops' real past sales (better historical completeness,
+  // more accurate trends & YoY). Persisted with the other filters.
+  const [includeInactive, setIncludeInactive] = useState<boolean>(savedFilters.includeInactive ?? false);
 
   const { data: kpis = [], isFetching: kFetch } = useQuery({
-    queryKey: ['kpis', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getKpis(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    queryKey: ['kpis', qDateFrom, qDateTo, cBrand, includeInactive],
+    queryFn: () => getKpis(qDateFrom, qDateTo, cBrand, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: timeSeries = [], isFetching: tFetch } = useQuery({
-    queryKey: ['timeseries', qDateFrom, qDateTo, cBrand, cCategory],
-    queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
+    queryKey: ['timeseries', qDateFrom, qDateTo, cBrand, cCategory, includeInactive],
+    queryFn: () => getTimeSeries(qDateFrom, qDateTo, cBrand, cCategory, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   // Last-year comparison: the same span shifted back one year, reusing the existing
@@ -129,8 +133,8 @@ export default function Dashboard() {
   const lyDateFrom = shiftYears(qDateFrom, -1);
   const lyDateTo   = shiftYears(qDateTo, -1);
   const { data: lyTimeSeries = [] } = useQuery({
-    queryKey: ['timeseries-ly', lyDateFrom, lyDateTo, cBrand, cCategory],
-    queryFn: () => getTimeSeries(lyDateFrom, lyDateTo, cBrand, cCategory).then(r => r.data),
+    queryKey: ['timeseries-ly', lyDateFrom, lyDateTo, cBrand, cCategory, includeInactive],
+    queryFn: () => getTimeSeries(lyDateFrom, lyDateTo, cBrand, cCategory, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   // Brand & Category filter options, scoped to the selected company (admins) /
@@ -158,8 +162,8 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryOptions]);
   const { data: shopsRes, isFetching: sFetch } = useQuery({
-    queryKey: ['shops', qDateFrom, qDateTo, cBrand],
-    queryFn: () => getShops(qDateFrom, qDateTo, cBrand).then(r => r.data),
+    queryKey: ['shops', qDateFrom, qDateTo, cBrand, includeInactive],
+    queryFn: () => getShops(qDateFrom, qDateTo, cBrand, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const shops = shopsRes?.data ?? [];
@@ -168,18 +172,18 @@ export default function Dashboard() {
   // is already filtered — no client-side re-filter needed, and it tracks the
   // scorecard date range the same way the trend charts do.
   const { data: products = [], isFetching: pFetch } = useQuery({
-    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll],
-    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll).then(r => r.data),
+    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive],
+    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: geoRaw = [] } = useQuery({
-    queryKey: ['geo', geoPeriod, cBrand, cCategory],
-    queryFn: () => getGeo(geoPeriod, cBrand, cCategory).then(r => r.data),
+    queryKey: ['geo', geoPeriod, cBrand, cCategory, includeInactive],
+    queryFn: () => getGeo(geoPeriod, cBrand, cCategory, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
-    queryKey: ['discounts', qDateFrom, qDateTo, cBrand, cCategory],
-    queryFn: () => getDiscounts(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
+    queryKey: ['discounts', qDateFrom, qDateTo, cBrand, cCategory, includeInactive],
+    queryFn: () => getDiscounts(qDateFrom, qDateTo, cBrand, cCategory, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: doiRaw = [] } = useQuery({
@@ -188,27 +192,27 @@ export default function Dashboard() {
     enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
   });
   const { data: cancellations = [], isFetching: cxFetch } = useQuery({
-    queryKey: ['cancellations', qDateFrom, qDateTo, cBrand, cCategory],
-    queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand, cCategory).then(r => r.data),
+    queryKey: ['cancellations', qDateFrom, qDateTo, cBrand, cCategory, includeInactive],
+    queryFn: () => getCancellations(qDateFrom, qDateTo, cBrand, cCategory, includeInactive).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: retention = [], isFetching: retFetch } = useQuery({
-    queryKey: ['retention'],
-    queryFn: () => getRetention().then(r => r.data),
+    queryKey: ['retention', includeInactive],
+    queryFn: () => getRetention(includeInactive).then(r => r.data),
     enabled: !!user, // trailing-12mo repeat metrics; company-scoped server-side
   });
   // When a brand/category filter is active, repeat purchase is recomputed on demand
   // for the exact active scope (single row) instead of read from the precompute.
   const { data: retFiltered, isFetching: retFFetch } = useQuery({
-    queryKey: ['retention-filtered', cCompany, cAcc, cPlat, cBrand, cCategory],
-    queryFn: () => getRetentionFiltered(cAcc, cPlat, cBrand, cCategory, cCompany).then(r => r.data),
+    queryKey: ['retention-filtered', cCompany, cAcc, cPlat, cBrand, cCategory, includeInactive],
+    queryFn: () => getRetentionFiltered(cAcc, cPlat, cBrand, cCategory, cCompany, includeInactive).then(r => r.data),
     enabled: !!user && (cBrand !== 'all' || cCategory !== 'all'),
     placeholderData: keepPreviousData,
   });
   // New vs existing buyers for the active scope + date range (date-aware, on demand).
   const { data: newVsExisting, isFetching: nveFetch } = useQuery({
-    queryKey: ['new-vs-existing', qDateFrom, qDateTo, cCompany, cAcc, cPlat, cBrand, cCategory],
-    queryFn: () => getNewVsExisting(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory).then(r => r.data),
+    queryKey: ['new-vs-existing', qDateFrom, qDateTo, cCompany, cAcc, cPlat, cBrand, cCategory, includeInactive],
+    queryFn: () => getNewVsExisting(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, includeInactive).then(r => r.data),
     enabled: !!user,
     placeholderData: keepPreviousData,
   });
@@ -256,11 +260,11 @@ export default function Dashboard() {
   useEffect(() => {
     try {
       localStorage.setItem(FILTERS_KEY, JSON.stringify({
-        cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab,
+        cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab, includeInactive,
       }));
     } catch { /* storage unavailable (private mode) — skip */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab]);
+  }, [cCompany, cAcc, cPlat, cBrand, cCategory, dateFrom, dateTo, granularity, geoPeriod, activeTab, includeInactive]);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -820,6 +824,18 @@ export default function Dashboard() {
               <option value="all">All months</option>
               {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
             </select>
+          </div>
+          {/* Store scope: Active-only (default) vs All-historical (includes closed
+              shops' real past sales — better historical completeness & YoY). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '4px 8px' }}
+            title="Active stores only, or all historical stores (includes closed/migrated shops' real past sales — more complete trends & year-over-year)">
+            <span style={{ fontSize: 10.5, color: TEXT3 }}>Stores</span>
+            <button onClick={() => setIncludeInactive(false)}
+              title="Only shops currently active"
+              style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${!includeInactive ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: !includeInactive ? 'rgba(26,122,138,0.08)' : WHITE, color: !includeInactive ? TEAL : TEXT2 }}>Active</button>
+            <button onClick={() => setIncludeInactive(true)}
+              title="All historical stores, including closed/inactive ones"
+              style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${includeInactive ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: includeInactive ? 'rgba(26,122,138,0.08)' : WHITE, color: includeInactive ? TEAL : TEXT2 }}>All</button>
           </div>
           {/* Fixed-width slot so toggling the loading indicator never reflows the
               header (previously its appearance pushed "Sign out" off the bar). */}

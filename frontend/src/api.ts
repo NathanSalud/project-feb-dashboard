@@ -63,14 +63,18 @@ export const login = (username: string, password: string) =>
 export const changePassword = (currentPassword: string, newPassword: string) =>
   api.post('/auth/change-password', { currentPassword, newPassword });
 
-export const getKpis = (dateFrom?: string, dateTo?: string, brand?: string) =>
-  api.get('/dashboard/kpis', { params: { dateFrom, dateTo, brand } });
+// `inc` (includeInactive) switches the backend between Active-stores-only (default)
+// and All-historical-stores — see the dashboard's Active/All store toggle.
+const incParam = (inc?: boolean) => (inc ? 'true' : undefined);
 
-export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
-  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo, brand, category } });
+export const getKpis = (dateFrom?: string, dateTo?: string, brand?: string, inc?: boolean) =>
+  api.get('/dashboard/kpis', { params: { dateFrom, dateTo, brand, includeInactive: incParam(inc) } });
 
-export const getShops = (dateFrom?: string, dateTo?: string, brand?: string) =>
-  api.get('/dashboard/shops', { params: { dateFrom, dateTo, brand } });
+export const getTimeSeries = (dateFrom?: string, dateTo?: string, brand?: string, category?: string, inc?: boolean) =>
+  api.get('/dashboard/timeseries', { params: { dateFrom, dateTo, brand, category, includeInactive: incParam(inc) } });
+
+export const getShops = (dateFrom?: string, dateTo?: string, brand?: string, inc?: boolean) =>
+  api.get('/dashboard/shops', { params: { dateFrom, dateTo, brand, includeInactive: incParam(inc) } });
 
 // Brand & Category filter options — cascades with company/account/platform and
 // Brand ↔ Category narrow each other.
@@ -85,17 +89,17 @@ export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) 
 // server-side so the ranking always matches the active scorecard date range.
 export const getProductsRanked = (
   dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
-  brand?: string, category?: string, all?: boolean,
-) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category, all: all ? 'true' : undefined } });
+  brand?: string, category?: string, all?: boolean, inc?: boolean,
+) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category, all: all ? 'true' : undefined, includeInactive: incParam(inc) } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
-export const getGeo = (period = 'overall', brand?: string, category?: string) =>
-  api.get('/dashboard/geo', { params: { period, brand, category } });
+export const getGeo = (period = 'overall', brand?: string, category?: string, inc?: boolean) =>
+  api.get('/dashboard/geo', { params: { period, brand, category, includeInactive: incParam(inc) } });
 
-export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
-  api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand, category } });
+export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string, category?: string, inc?: boolean) =>
+  api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand, category, includeInactive: incParam(inc) } });
 
 export const getDoi = () =>
   api.get('/dashboard/doi');
@@ -103,21 +107,21 @@ export const getDoi = () =>
 export const getPersonas = (period = 'lifetime', brand?: string, category?: string) =>
   api.get('/dashboard/personas', { params: { period, brand, category } });
 
-export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string, category?: string) =>
-  api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand, category } });
+export const getCancellations = (dateFrom?: string, dateTo?: string, brand?: string, category?: string, inc?: boolean) =>
+  api.get('/dashboard/cancellations', { params: { dateFrom, dateTo, brand, category, includeInactive: incParam(inc) } });
 
-export const getRetention = () =>
-  api.get('/dashboard/retention');
+export const getRetention = (inc?: boolean) =>
+  api.get('/dashboard/retention', { params: { includeInactive: incParam(inc) } });
 
 // Brand/category-aware repeat purchase for the active scope (single row).
 export const getRetentionFiltered = (
-  account?: string, platform?: string, brand?: string, category?: string, company?: string,
-) => api.get('/dashboard/retention-filtered', { params: { account, platform, brand, category, company } });
+  account?: string, platform?: string, brand?: string, category?: string, company?: string, inc?: boolean,
+) => api.get('/dashboard/retention-filtered', { params: { account, platform, brand, category, company, includeInactive: incParam(inc) } });
 
 // New vs existing buyers for the active scope + date range (single aggregated row).
 export const getNewVsExisting = (
   dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
-  brand?: string, category?: string,
-) => api.get('/dashboard/new-vs-existing', { params: { dateFrom, dateTo, platform, account, company, brand, category } });
+  brand?: string, category?: string, inc?: boolean,
+) => api.get('/dashboard/new-vs-existing', { params: { dateFrom, dateTo, platform, account, company, brand, category, includeInactive: incParam(inc) } });
 
 export default api;

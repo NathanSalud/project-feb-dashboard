@@ -215,6 +215,7 @@ export class CacheService implements OnModuleInit {
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
+        a.IS_ACTIVE                                     AS IS_ACTIVE,
         COUNT(DISTINCT f.PLATFORM_ORDER_ID)             AS ORDERS,
         COUNT(f.ORDER_ITEM_SK)                          AS ITEMS,
         ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2)         AS REVENUE,
@@ -225,9 +226,8 @@ export class CacheService implements OnModuleInit {
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM
     `);
     this.cache.set('kpis', data);
@@ -343,6 +343,7 @@ export class CacheService implements OnModuleInit {
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
+        a.IS_ACTIVE                                                           AS IS_ACTIVE,
         DATE_TRUNC('DAY', f.ORDER_DATE)                                        AS ORDER_DATE,
         COUNT(f.ORDER_ITEM_SK)                                                 AS ITEMS,
         SUM(IFF(f.ITEM_STATUS IN (${CANCELLED_STATUS_SQL}), 1, 0))             AS CANCELLED,
@@ -350,9 +351,8 @@ export class CacheService implements OnModuleInit {
       FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       WHERE f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `);
     this.cache.set('cancellations', data);
@@ -373,6 +373,7 @@ export class CacheService implements OnModuleInit {
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
+        a.IS_ACTIVE                                                           AS IS_ACTIVE,
         DATE_TRUNC('DAY', f.ORDER_DATE)                                        AS ORDER_DATE,
         COUNT(f.ORDER_ITEM_SK)                                                 AS ITEMS,
         SUM(IFF(f.ITEM_STATUS IN (${CANCELLED_STATUS_SQL}), 1, 0))             AS CANCELLED,
@@ -381,9 +382,8 @@ export class CacheService implements OnModuleInit {
       INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       ${PRODUCT_DIM_JOIN}
       WHERE f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `, binds);
   }
@@ -408,7 +408,7 @@ export class CacheService implements OnModuleInit {
   // sentinel — so we can produce (company,platform), (company,ALL), (ALL,platform)
   // and (ALL,ALL) rollups, each with buyer-order counts computed WITHIN that grain
   // (repeat rate is not additive, so every rollup must be aggregated directly).
-  private retentionQuery(byCompany: boolean, byAccount: boolean, byPlatform: boolean): string {
+  private retentionQuery(byCompany: boolean, byAccount: boolean, byPlatform: boolean, includeInactive?: boolean): string {
     const co = byCompany ? 'a.COMPANY_NAME' : `'${RETENTION_ALL}'`;
     const ac = byAccount ? 'a.ACCOUNT_NAME' : `'${RETENTION_ALL}'`;
     const pl = byPlatform ? 'a.PLATFORM' : `'${RETENTION_ALL}'`;
@@ -424,8 +424,7 @@ export class CacheService implements OnModuleInit {
         FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
         INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
         WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
-          AND ${RETENTION_FLOOR_SQL}
-          AND a.IS_ACTIVE = TRUE
+          AND ${RETENTION_FLOOR_SQL}${this.activeSql(includeInactive)}
           AND a.ACCOUNT_NAME != 's'
           AND f.BUYER_ID IS NOT NULL
           AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')
@@ -451,20 +450,30 @@ export class CacheService implements OnModuleInit {
   // directly — the frontend then picks the row matching the active company/account/
   // platform filter (#7: repeat purchase now responds to the account selector).
   private async refreshRetention() {
+    // Repeat purchase is buyer-level and can't be filtered in memory by shop, so we
+    // precompute two variants: active-only ('retention') and all historical stores
+    // ('retention:all'). getRetention picks by the Active/All toggle.
+    await Promise.all([
+      this.refreshRetentionVariant(false, 'retention'),
+      this.refreshRetentionVariant(true, 'retention:all'),
+    ]);
+  }
+
+  private async refreshRetentionVariant(includeInactive: boolean, cacheKey: string) {
     const bools = [true, false];
     const grains: Array<[boolean, boolean, boolean]> = [];
     for (const c of bools) for (const a of bools) for (const p of bools) grains.push([c, a, p]);
     const rows: any[] = [];
     await this.mapPool(grains, this.WARM_CONCURRENCY, async ([byCompany, byAccount, byPlatform]) => {
       try {
-        const part = await this.snowflake.query(this.retentionQuery(byCompany, byAccount, byPlatform));
+        const part = await this.snowflake.query(this.retentionQuery(byCompany, byAccount, byPlatform, includeInactive));
         rows.push(...part);
       } catch (err) {
-        this.logger.warn(`Retention[c=${byCompany},a=${byAccount},p=${byPlatform}] skipped: ${(err as Error).message}`);
+        this.logger.warn(`Retention[${cacheKey} c=${byCompany},a=${byAccount},p=${byPlatform}] skipped: ${(err as Error).message}`);
       }
     });
-    this.cache.set('retention', rows);
-    this.logger.log(`Retention cached — ${rows.length} rows`);
+    this.cache.set(cacheKey, rows);
+    this.logger.log(`Retention cached (${cacheKey}) — ${rows.length} rows`);
   }
 
   // Pure Snowflake fetchers for time series — no caching here (policy lives in
@@ -480,6 +489,7 @@ export class CacheService implements OnModuleInit {
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
+        a.IS_ACTIVE                             AS IS_ACTIVE,
         DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
         COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
         COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS ITEMS,
@@ -492,13 +502,12 @@ export class CacheService implements OnModuleInit {
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       WHERE f.ITEM_STATUS IN (${GMV_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'`;
 
   private fetchAllTimeSeries(): Promise<any[]> {
     return this.snowflake.query(`
       SELECT ${this.TIMESERIES_BODY}
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `);
   }
@@ -507,7 +516,7 @@ export class CacheService implements OnModuleInit {
     return this.snowflake.query(`
       SELECT ${this.TIMESERIES_BODY}
       AND a.COMPANY_NAME = ?
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `, [companyName]);
   }
@@ -542,6 +551,7 @@ export class CacheService implements OnModuleInit {
         a.COMPANY_NAME,
         a.ACCOUNT_NAME,
         a.PLATFORM,
+        a.IS_ACTIVE                             AS IS_ACTIVE,
         DATE_TRUNC('DAY', f.ORDER_DATE)         AS ORDER_DATE,
         COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
         COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS ITEMS,
@@ -555,9 +565,8 @@ export class CacheService implements OnModuleInit {
       ${PRODUCT_DIM_JOIN}
       WHERE f.ITEM_STATUS IN (${GMV_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
       ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
     `, binds);
   }
@@ -570,6 +579,7 @@ export class CacheService implements OnModuleInit {
         a.PLATFORM,
         a.SHOP_ID,
         a.SHOP_NAME,
+        a.IS_ACTIVE                                                                      AS IS_ACTIVE,
         COUNT(DISTINCT f.PLATFORM_ORDER_ID)                                              AS ORDERS,
         COUNT(f.ORDER_ITEM_SK)                                                           AS ITEMS,
         ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2)                                         AS REVENUE,
@@ -578,9 +588,8 @@ export class CacheService implements OnModuleInit {
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
       AND f.ORDER_DATE >= '2023-01-01'
-      AND a.IS_ACTIVE = TRUE
       AND a.ACCOUNT_NAME != 's'
-      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.SHOP_ID, a.SHOP_NAME
+      GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.SHOP_ID, a.SHOP_NAME, a.IS_ACTIVE
       ORDER BY a.COMPANY_NAME, REVENUE DESC
     `);
     this.cache.set('shops', data);
@@ -632,6 +641,7 @@ private geoQuery(dateFloor: string): string {
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
       a.PLATFORM,
+      a.IS_ACTIVE                             AS IS_ACTIVE,
       f.SHIPPING_PROVINCE,
       COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
       ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
@@ -639,11 +649,10 @@ private geoQuery(dateFloor: string): string {
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND ${dateFloor}
-    AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
     AND f.SHIPPING_PROVINCE IS NOT NULL
     AND f.SHIPPING_PROVINCE != ''
-    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, f.SHIPPING_PROVINCE
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, f.SHIPPING_PROVINCE
     ORDER BY a.COMPANY_NAME, REVENUE DESC
   `;
 }
@@ -671,10 +680,13 @@ private normaliseGeoRows(data: any[]): any[] {
   const merged: Record<string, any> = {};
   data.forEach((r: any) => {
     const province = this.normaliseProvince(r.SHIPPING_PROVINCE);
-    const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${province}`;
+    // IS_ACTIVE kept in the key + row so the Active/All toggle can filter geo in
+    // memory (a province can have both active and inactive shops shipping to it).
+    const key = `${r.COMPANY_NAME}|${r.ACCOUNT_NAME}|${r.PLATFORM}|${r.IS_ACTIVE}|${province}`;
     if (!merged[key]) {
       merged[key] = {
         COMPANY_NAME: r.COMPANY_NAME, ACCOUNT_NAME: r.ACCOUNT_NAME, PLATFORM: r.PLATFORM,
+        IS_ACTIVE: r.IS_ACTIVE,
         SHIPPING_PROVINCE: province, ORDERS: 0, REVENUE: 0,
       };
     }
@@ -698,6 +710,7 @@ private async fetchGeoEnriched(company: string | null, dateFloor: string, brand?
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
       a.PLATFORM,
+      a.IS_ACTIVE                             AS IS_ACTIVE,
       f.SHIPPING_PROVINCE,
       COUNT(DISTINCT f.PLATFORM_ORDER_ID)     AS ORDERS,
       ROUND(SUM(f.ORIGINAL_PRODUCT_PRICE), 2) AS REVENUE
@@ -706,11 +719,10 @@ private async fetchGeoEnriched(company: string | null, dateFloor: string, brand?
     ${PRODUCT_DIM_JOIN}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND ${dateFloor}
-    AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
     AND f.SHIPPING_PROVINCE IS NOT NULL
     AND f.SHIPPING_PROVINCE != ''${compSql}${bc.sql}
-    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, f.SHIPPING_PROVINCE
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, f.SHIPPING_PROVINCE
     ORDER BY a.COMPANY_NAME, REVENUE DESC
   `, binds);
   return this.normaliseGeoRows(rows);
@@ -722,7 +734,7 @@ private async fetchGeoEnriched(company: string | null, dateFloor: string, brand?
 // "Repeat" here = a buyer with ≥2 orders OF THE FILTERED brand/category in-window.
 private fetchRetentionFiltered(
   company: string | null, account: string | null, platform: string | null,
-  brand?: string, category?: string,
+  brand?: string, category?: string, includeInactive?: boolean,
 ): Promise<any[]> {
   const bc = this.brandCatWhere(brand, category);
   const binds: any[] = [];
@@ -742,8 +754,7 @@ private fetchRetentionFiltered(
       INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       ${PRODUCT_DIM_JOIN}
       WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
-        AND ${RETENTION_FLOOR_SQL}
-        AND a.IS_ACTIVE = TRUE
+        AND ${RETENTION_FLOOR_SQL}${this.activeSql(includeInactive)}
         AND a.ACCOUNT_NAME != 's'
         AND f.BUYER_ID IS NOT NULL
         AND UPPER(TRIM(f.BUYER_ID)) NOT IN ('0', 'N/A', 'NULL', '-1', '')${scopeSql}${bc.sql}
@@ -766,7 +777,7 @@ private fetchRetentionFiltered(
 // cannot use the nightly precompute — computed on demand like retention-filtered.
 private fetchNewVsExisting(
   company: string | null, account: string | null, platform: string | null,
-  from: string, to: string, brand?: string, category?: string,
+  from: string, to: string, brand?: string, category?: string, includeInactive?: boolean,
 ): Promise<any[]> {
   const bc = this.brandCatWhere(brand, category);
   const scope: string[] = [];
@@ -790,7 +801,7 @@ private fetchNewVsExisting(
       ${PRODUCT_DIM_JOIN}
       WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
         AND f.ORDER_DATE >= '2023-01-01'
-        AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+        AND a.ACCOUNT_NAME != 's'${this.activeSql(includeInactive)}
         AND ${buyerGuard}${scopeSql}${bc.sql}
       GROUP BY f.BUYER_ID
     ),
@@ -801,7 +812,7 @@ private fetchNewVsExisting(
       ${PRODUCT_DIM_JOIN}
       WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
         AND f.ORDER_DATE >= ? AND f.ORDER_DATE <= ?
-        AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+        AND a.ACCOUNT_NAME != 's'${this.activeSql(includeInactive)}
         AND ${buyerGuard}${scopeSql}${bc.sql}
     )
     SELECT
@@ -842,6 +853,7 @@ private fetchAllDiscounts(): Promise<any[]> {
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
       a.PLATFORM,
+      a.IS_ACTIVE                                      AS IS_ACTIVE,
       DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
       ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
       ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
@@ -851,9 +863,8 @@ private fetchAllDiscounts(): Promise<any[]> {
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
-    AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
-    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
     ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
   `);
 }
@@ -864,6 +875,7 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
       a.PLATFORM,
+      a.IS_ACTIVE                                      AS IS_ACTIVE,
       DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
       ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
       ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
@@ -873,10 +885,9 @@ private fetchTenantDiscounts(companyName: string): Promise<any[]> {
     INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
-    AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'
     AND a.COMPANY_NAME = ?
-    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
     ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
   `, [companyName]);
 }
@@ -894,6 +905,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       a.COMPANY_NAME,
       a.ACCOUNT_NAME,
       a.PLATFORM,
+      a.IS_ACTIVE                                      AS IS_ACTIVE,
       DATE_TRUNC('DAY', f.ORDER_DATE)                  AS ORDER_DATE,
       ROUND(SUM(f.PLATFORM_DISCOUNT), 2)               AS PLATFORM_DISCOUNT,
       ROUND(SUM(f.SELLER_DISCOUNT), 2)                 AS SELLER_DISCOUNT,
@@ -904,9 +916,8 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     ${PRODUCT_DIM_JOIN}
     WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
     AND f.ORDER_DATE >= '2023-01-01'
-    AND a.IS_ACTIVE = TRUE
     AND a.ACCOUNT_NAME != 's'${compSql}${bc.sql}
-    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, DATE_TRUNC('DAY', f.ORDER_DATE)
+    GROUP BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, a.IS_ACTIVE, DATE_TRUNC('DAY', f.ORDER_DATE)
     ORDER BY a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, ORDER_DATE
   `, binds);
 }
@@ -1091,7 +1102,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   private fetchProductsRanked(
     from: string, to: string,
     company: string | null, platform: string | null, account: string | null,
-    brand?: string, category?: string, cap = 50,
+    brand?: string, category?: string, cap = 50, includeInactive?: boolean,
   ): Promise<any[]> {
     // `cap` is set server-side (50 for Top Products, 1000 for the "all assortment"
     // view) — never from raw user input — so it is safe to inline in the SQL.
@@ -1100,7 +1111,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       `f.ITEM_STATUS IN (${GMV_STATUS_SQL})`,
       `f.ORDER_DATE >= ?`,
       `f.ORDER_DATE <= ?`,
-      `a.IS_ACTIVE = TRUE`,
+      ...(includeInactive ? [] : [`a.IS_ACTIVE = TRUE`]),
       `a.ACCOUNT_NAME != 's'`,
       `f.PRODUCT_NAME IS NOT NULL`,
       `f.PRODUCT_NAME != ''`,
@@ -1141,12 +1152,12 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
 
   // ── PUBLIC GETTERS ──────────────────────────────────────────────
 
- getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+ getKpis(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, includeInactive?: boolean) {
     const data = (this.cache.get('kpis') || []) as any[];
-    return this.filterCompany(data, companyName, isAdmin);
+    return this.filterCompany(data, companyName, isAdmin, includeInactive);
   }
 
-  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  async getTimeSeries(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
   let data: any[];
   if (this.brandCatActive(brand, category)) {
     // On-demand brand/category-filtered variant (DIM_PRODUCTS join), cached per
@@ -1166,12 +1177,12 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
           companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
         );
   }
-  return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+  return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE', includeInactive);
 }
 
-  getShops(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
+  getShops(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, includeInactive?: boolean) {
     const data = (this.cache.get('shops') || []) as any[];
-    return this.filterCompany(data, companyName, isAdmin);
+    return this.filterCompany(data, companyName, isAdmin, includeInactive);
   }
 
   getProducts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string) {
@@ -1186,7 +1197,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   // other admin loads.
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean },
   ): Promise<any[]> {
     const from = opts.dateFrom || '2023-01-01';
     const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
@@ -1198,8 +1209,9 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
     const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
     const cap = opts.all ? 1000 : 50;  // "all assortment" view lifts the Top-50 cap
-    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*', cap });
-    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category, cap);
+    const inc = !!opts.includeInactive;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*', cap, inc });
+    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category, cap, inc);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     return this.loadWithCache(
       this.productsRankedCache, this.productsRankedInflight, key, fetchFn, 'products-ranked',
@@ -1258,7 +1270,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     return this.cache.get('accounts') || [];
   }
 
-  async getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD, brand?: string, category?: string) {
+  async getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD, brand?: string, category?: string, includeInactive?: boolean) {
   const per = GEO_PERIODS[period] ? period : GEO_DEFAULT_PERIOD;
   if (this.brandCatActive(brand, category)) {
     const floor = GEO_PERIODS[per];
@@ -1269,13 +1281,13 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
           this.geoBCCache, this.geoBCInflight,
           key, () => this.fetchGeoEnriched(companyName, floor, brand, category), 'geo-bc',
         );
-    return this.filterCompany(data, companyName, isAdmin);
+    return this.filterCompany(data, companyName, isAdmin, includeInactive);
   }
   const data = (this.cache.get(`geo:${per}`) || []) as any[];
-  return this.filterCompany(data, companyName, isAdmin);
+  return this.filterCompany(data, companyName, isAdmin, includeInactive);
 }
 
-async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
   let data: any[];
   if (this.brandCatActive(brand, category)) {
     const key = `${companyName}|${brand || 'all'}|${category || 'all'}`;
@@ -1293,7 +1305,7 @@ async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dat
           companyName, c => this.fetchTenantDiscounts(c), 'discounts',
         );
   }
-  return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+  return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE', includeInactive);
 }
 
 getDoi(companyName: string, isAdmin: boolean) {
@@ -1306,7 +1318,7 @@ getDoi(companyName: string, isAdmin: boolean) {
 
   // Cancellation / return counts — date-filterable, same tenant model as KPIs.
   // Brand/category-aware on demand (DIM_PRODUCTS join), else the eager cache.
-  async getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string) {
+  async getCancellations(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {
     if (this.brandCatActive(brand, category)) {
       const key = `${companyName}|${brand || 'all'}|${category || 'all'}`;
       const data = isAdmin
@@ -1315,10 +1327,10 @@ getDoi(companyName: string, isAdmin: boolean) {
             this.cancellationsBCByCompany, this.cancellationsBCInflight,
             key, () => this.fetchCancellationsEnriched(companyName, brand, category), 'cancellations-bc',
           );
-      return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+      return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE', includeInactive);
     }
     const data = (this.cache.get('cancellations') || []) as any[];
-    return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE');
+    return this.filterAndDate(data, companyName, isAdmin, dateFrom, dateTo, 'ORDER_DATE', includeInactive);
   }
 
   // Repeat-purchase metrics (trailing 12 mo). Rows are pre-aggregated per
@@ -1326,8 +1338,8 @@ getDoi(companyName: string, isAdmin: boolean) {
   // own company's rows (incl. their all-platform rollup); admins get everything
   // including the global RETENTION_ALL rows. The frontend selects the row that
   // matches the active company/platform filter.
-  getRetention(companyName: string, isAdmin: boolean) {
-    const data = (this.cache.get('retention') || []) as any[];
+  getRetention(companyName: string, isAdmin: boolean, includeInactive?: boolean) {
+    const data = (this.cache.get(includeInactive ? 'retention:all' : 'retention') || []) as any[];
     return this.filterCompany(data, companyName, isAdmin);
   }
 
@@ -1336,15 +1348,16 @@ getDoi(companyName: string, isAdmin: boolean) {
   // to their own company; admins may scope to one company or across all.
   async getRetentionFiltered(
     companyName: string, isAdmin: boolean,
-    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string },
+    opts: { account?: string; platform?: string; brand?: string; category?: string; company?: string; includeInactive?: boolean },
   ) {
     const effCompany = isAdmin ? (opts.company && opts.company !== 'all' ? opts.company : null) : companyName;
     const account  = opts.account  && opts.account  !== 'all' ? opts.account  : null;
     const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
     const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
     const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
-    const key = JSON.stringify({ c: effCompany ?? '*', a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*' });
-    const run = () => this.fetchRetentionFiltered(effCompany, account, platform, brand, category);
+    const inc = !!opts.includeInactive;
+    const key = JSON.stringify({ c: effCompany ?? '*', a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*', inc });
+    const run = () => this.fetchRetentionFiltered(effCompany, account, platform, brand, category, inc);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     const rows = await this.loadWithCache(this.retentionBCCache, this.retentionBCInflight, key, fetchFn, 'retention-bc');
     return rows[0] || { BUYERS: 0, REPEAT_BUYERS: 0, REPEAT_RATE: 0, REPEAT_GMV_SHARE: 0, AVG_ORDERS: 0 };
@@ -1355,7 +1368,7 @@ getDoi(companyName: string, isAdmin: boolean) {
   // scope to one company or across all (the all-company scan is serialized).
   async getNewVsExisting(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string },
+    opts: { dateFrom?: string; dateTo?: string; account?: string; platform?: string; brand?: string; category?: string; company?: string; includeInactive?: boolean },
   ) {
     const from = opts.dateFrom || '2023-01-01';
     const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
@@ -1364,8 +1377,9 @@ getDoi(companyName: string, isAdmin: boolean) {
     const platform = opts.platform && opts.platform !== 'all' ? opts.platform : null;
     const brand    = opts.brand    && opts.brand    !== 'all' ? opts.brand    : undefined;
     const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
-    const key = JSON.stringify({ c: effCompany ?? '*', from, to, a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*' });
-    const run = () => this.fetchNewVsExisting(effCompany, account, platform, from, to, brand, category);
+    const inc = !!opts.includeInactive;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, a: account ?? '*', p: platform ?? '*', b: brand ?? '*', cat: category ?? '*', inc });
+    const run = () => this.fetchNewVsExisting(effCompany, account, platform, from, to, brand, category, inc);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     const rows = await this.loadWithCache(this.newVsExistingCache, this.newVsExistingInflight, key, fetchFn, 'new-vs-existing');
     return rows[0] || { BUYERS: 0, NEW_BUYERS: 0, EXISTING_BUYERS: 0, NEW_RATE: 0, EXISTING_RATE: 0 };
@@ -1385,16 +1399,34 @@ getDoi(companyName: string, isAdmin: boolean) {
     };
   }
 
-  private filterCompany(data: any[], companyName: string, isAdmin: boolean) {
-    if (isAdmin) return data;
-    return data.filter(r => r.COMPANY_NAME === companyName);
+  // Active-store SQL guard. When includeInactive is set the predicate is dropped so
+  // closed/inactive shops (real historical sales) are included — see the "Active
+  // stores / All historical" toggle. Used by the on-demand SQL fetchers that rank or
+  // aggregate in-SQL and so can't be filtered in memory.
+  private activeSql(includeInactive?: boolean): string {
+    return includeInactive ? '' : ' AND a.IS_ACTIVE = TRUE';
+  }
+  // In-memory active-store guard for the cached datasets (which now hold ALL stores,
+  // each row tagged with IS_ACTIVE). Rows without an IS_ACTIVE field are always kept.
+  // Robust to the driver returning the boolean as true/false, 1/0 or 'true'/'false'.
+  private activeRow(r: any, includeInactive?: boolean): boolean {
+    if (includeInactive) return true;
+    const v = r.IS_ACTIVE;
+    const inactive = v === false || v === 0 || v === 'false' || v === 'FALSE' || v === 'f' || v === 'F' || v === '0';
+    return !inactive;
+  }
+
+  private filterCompany(data: any[], companyName: string, isAdmin: boolean, includeInactive?: boolean) {
+    const base = isAdmin ? data : data.filter(r => r.COMPANY_NAME === companyName);
+    return includeInactive ? base : base.filter(r => this.activeRow(r, includeInactive));
   }
 
   private filterAndDate(
   data: any[], companyName: string, isAdmin: boolean,
-  dateFrom?: string, dateTo?: string, dateField = 'ORDER_DATE'
+  dateFrom?: string, dateTo?: string, dateField = 'ORDER_DATE', includeInactive?: boolean
 ) {
   return data.filter(r => {
+    if (!this.activeRow(r, includeInactive)) return false;
     const compMatch = isAdmin || r.COMPANY_NAME === companyName;
     const raw = r[dateField];
     // Handle both JS Date objects and string dates from Snowflake
