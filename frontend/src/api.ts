@@ -89,8 +89,8 @@ export const getProducts = (dateFrom?: string, dateTo?: string, brand?: string) 
 // server-side so the ranking always matches the active scorecard date range.
 export const getProductsRanked = (
   dateFrom?: string, dateTo?: string, platform?: string, account?: string, company?: string,
-  brand?: string, category?: string, all?: boolean, inc?: boolean,
-) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category, all: all ? 'true' : undefined, includeInactive: incParam(inc) } });
+  brand?: string, category?: string, all?: boolean, inc?: boolean, byStore?: boolean,
+) => api.get('/dashboard/products-ranked', { params: { dateFrom, dateTo, platform, account, company, brand, category, all: all ? 'true' : undefined, includeInactive: incParam(inc), byStore: byStore ? 'true' : undefined } });
 
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
@@ -103,6 +103,10 @@ export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string,
 
 export const getDoi = () =>
   api.get('/dashboard/doi');
+
+// Delivery-completeness summary (trailing 90d WMS fulfillment) for the active tenant.
+export const getFulfillment = () =>
+  api.get('/dashboard/fulfillment');
 
 export const getPersonas = (period = 'lifetime', brand?: string, category?: string) =>
   api.get('/dashboard/personas', { params: { period, brand, category } });

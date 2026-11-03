@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAuth } from './AuthContext';
-import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getCancellations, getRetention, getRetentionFiltered, getProductDims, getNewVsExisting } from './api';
+import api, { getKpis, getTimeSeries, getShops, getProductsRanked, getGeo, getDiscounts, getDoi, getFulfillment, getCancellations, getRetention, getRetentionFiltered, getProductDims, getNewVsExisting } from './api';
 import PersonasTab from './PersonasTab';
 import ComparePanels from './ComparePanels';
 import ChangePasswordModal from './ChangePasswordModal';
@@ -113,6 +113,10 @@ export default function Dashboard() {
   const [jumpMonth, setJumpMonth] = useState<string>('all');
   // Top Products: Top 50 (default) vs the full product assortment (server lifts the cap).
   const [prodShowAll, setProdShowAll] = useState(false);
+  // Top Products: break the ranking down to the store level — the same product listed
+  // in multiple stores then shows one row per store (store id/name + SKU exposed, and
+  // carried into the CSV export). Off = merged across stores (default).
+  const [prodByStore, setProdByStore] = useState(false);
   // Store scope: Active stores only (default) vs All historical stores — the latter
   // includes closed/inactive shops' real past sales (better historical completeness,
   // more accurate trends & YoY). Persisted with the other filters.
@@ -172,8 +176,8 @@ export default function Dashboard() {
   // is already filtered — no client-side re-filter needed, and it tracks the
   // scorecard date range the same way the trend charts do.
   const { data: products = [], isFetching: pFetch } = useQuery({
-    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive],
-    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive).then(r => r.data),
+    queryKey: ['products-ranked', qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive, prodByStore],
+    queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive, prodByStore).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: geoRaw = [] } = useQuery({
@@ -190,6 +194,13 @@ export default function Dashboard() {
     queryKey: ['doi'],
     queryFn: () => getDoi().then(r => r.data),
     enabled: !!user, // DOI is now company-scoped server-side; available to every tenant + admin
+  });
+  // Delivery completeness (trailing-90d WMS fulfillment) summary for the active tenant
+  // scope. Company-scoped server-side; shown as KPI tiles on the Inventory (ops) tab.
+  const { data: fulfillment = null } = useQuery({
+    queryKey: ['fulfillment'],
+    queryFn: () => getFulfillment().then(r => r.data),
+    enabled: !!user,
   });
   const { data: cancellations = [], isFetching: cxFetch } = useQuery({
     queryKey: ['cancellations', qDateFrom, qDateTo, cBrand, cCategory, includeInactive],
@@ -1008,6 +1019,13 @@ export default function Dashboard() {
                 {prodShowAll ? 'Top 50' : 'Show all'}
               </button>
             )}
+            {activeTab === 'products' && (
+              <button onClick={() => { setProdByStore(v => !v); setSortCol(''); }}
+                title={prodByStore ? 'One row per store — the same product shows separately for each store it is listed in' : 'Break the ranking down to the store level (and add store id + SKU to the export)'}
+                style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${prodByStore ? TEAL : BORDER}`, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', background: prodByStore ? 'rgba(26,122,138,0.08)' : WHITE, color: prodByStore ? TEAL : TEXT2, whiteSpace: 'nowrap' as const }}>
+                {prodByStore ? 'By store ✓' : 'By store'}
+              </button>
+            )}
             {(activeTab === 'shops' || activeTab === 'products') && (
               <input value={tableSearch} onChange={e => setTableSearch(e.target.value)}
                 placeholder={activeTab === 'products' ? 'Search product or SKU…' : 'Search shop or ID…'}
@@ -1030,6 +1048,36 @@ export default function Dashboard() {
             </button>
             </div>
           </div>
+          {activeTab === 'doi' && fulfillment && (
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const, marginBottom: 14, alignItems: 'stretch' }}>
+              {fulfillment.CUSTOMERS === 0 ? (
+                <div style={{ fontSize: 12, color: TEXT3, padding: '8px 0' }}>
+                  Delivery completeness: no warehouse (WMS) fulfillment data for this selection — these orders aren’t fulfilled through GDEC’s warehouse.
+                </div>
+              ) : (
+                <>
+                  {[
+                    { label: 'Unit fill rate', v: fulfillment.UNIT_FILL_RATE, hint: 'Units shipped ÷ units ordered · last 90 days' },
+                    { label: 'Fully served', v: fulfillment.SERVED_RATE, hint: 'Order lines shipped & closed in full ÷ all lines · last 90 days' },
+                    { label: 'Cancelled', v: fulfillment.CANCEL_RATE, hint: 'Order lines cancelled ÷ all lines · last 90 days', invert: true },
+                  ].map((t: any) => {
+                    const good = t.invert ? (t.v != null && t.v <= 8) : (t.v != null && t.v >= 90);
+                    const warn = t.invert ? (t.v != null && t.v <= 15) : (t.v != null && t.v >= 75);
+                    const col = t.v == null ? TEXT3 : good ? '#1E8E5A' : warn ? '#C07A08' : '#C0392B';
+                    return (
+                      <div key={t.label} title={t.hint} style={{ border: `1px solid ${BORDER}`, borderRadius: 10, padding: '10px 16px', background: WHITE, minWidth: 128 }}>
+                        <div style={{ fontSize: 10, color: TEXT3, fontWeight: 500, marginBottom: 4 }}>{t.label}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: col, fontFamily: 'JetBrains Mono, monospace' }}>{t.v == null ? '—' : `${t.v}%`}</div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ alignSelf: 'center', fontSize: 10.5, color: TEXT3, maxWidth: 220, lineHeight: 1.4 }}>
+                    Delivery completeness · trailing 90 days · {fmtN(Number(fulfillment.TOTAL_LINES))} order lines
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
             {activeTab === 'breakdown' && (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
@@ -1086,6 +1134,12 @@ export default function Dashboard() {
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
                 <thead><tr>
                   <th title="Rank by the current sort (GMV by default)" style={{ userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 12px 10px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right' as const, width: 34 }}>#</th>
+                  {prodByStore && (
+                    <th onClick={() => handleSort('STORE')} title="The store this product is listed in"
+                      style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: 'left' as const }}>
+                      Store {sortCol === 'STORE' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                    </th>
+                  )}
                   {[['Product','PRODUCT_NAME'],['Platform','PLATFORM'],['SKU','PRODUCT_SKU'],['Orders','ORDERS'],['Units','UNITS'],['ASP','ASP'],['SOB','SOB'],['GMV','REVENUE'],['Inventory','INVENTORY']].map(([h,col],i) => (
                     <th key={h} onClick={() => handleSort(col)}
                       style={{ cursor: 'pointer', userSelect: 'none' as const, whiteSpace: 'nowrap' as const, fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i>=3?'right' as const:'left' as const }}
@@ -1100,6 +1154,9 @@ export default function Dashboard() {
                     return (
                     <tr key={i} style={{ background: i%2===0 ? WHITE : '#fafbfc' }}>
                       <td style={{ padding: '9px 12px 9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT3, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, textAlign: 'right' as const, width: 34 }}>{i + 1}</td>
+                      {prodByStore && (
+                        <td title={p.STORE_ID ? `Store ID: ${p.STORE_ID}` : undefined} style={{ padding: '9px 10px 9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT2, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{p.STORE || '—'}</td>
+                      )}
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, color: TEXT1, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{p.PRODUCT_NAME}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}` }}>{multi
                         ? <span title={`Combined across ${p.PLATFORM_COUNT} platforms`} style={{ background: `${TEXT3}18`, color: TEXT2, padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>Multi ({p.PLATFORM_COUNT})</span>

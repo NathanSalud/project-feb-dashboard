@@ -197,6 +197,7 @@ export class CacheService implements OnModuleInit {
         this.refreshAccounts(),
         this.refreshGeo(),
         this.refreshDoi(),
+        this.refreshFulfillment(),
         this.refreshPersonas(),
         this.refreshCancellations(),
         this.refreshRetention(),
@@ -1017,6 +1018,55 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     this.logger.log(`DOI cached — ${data.length} rows (${visible} tenant-visible, ${custMap.size} CUST_IDs mapped)`);
   }
 
+  // ── Delivery completeness (WMS fulfillment) — feedback item "track if
+  // deliveries were served completely" ────────────────────────────────
+  // Trailing-90-day operational snapshot from FACT_WMS_ORDER_ITEMS: how much of
+  // what was ordered actually shipped, and how many order lines closed in full vs
+  // were cancelled. Independent of the dashboard date filters (like DOI — this is
+  // a current ops health read). Aggregated per WMS CUSTOMER_ID, then tagged with
+  // COMPANY_NAME via the SAME OP_CHN_MAP_V2 crosswalk DOI uses, so it isolates by
+  // tenant identically. A CUST_ID shared across >1 company (or unresolved) is left
+  // COMPANY_NAME = null so tenants can't see it; admins bypass the filter.
+  private async refreshFulfillment() {
+    const data = await this.snowflake.query(`
+      SELECT
+        CUSTOMER_ID,
+        COUNT(*)                                                         AS TOTAL_LINES,
+        SUM(QUANTITY_ORDERED)                                            AS ORDERED_UNITS,
+        SUM(QUANTITY_SHIPPED)                                            AS SHIPPED_UNITS,
+        SUM(IFF(FULFILLMENT_STATUS = 'Shipment Order Closed', 1, 0))     AS CLOSED_LINES,
+        SUM(IFF(FULFILLMENT_STATUS = 'Shipment Order Cancelled', 1, 0))  AS CANCELLED_LINES
+      FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_WMS_ORDER_ITEMS
+      WHERE ORDER_CREATED_AT_PHT >= DATEADD('day', -90, CURRENT_DATE())
+      GROUP BY CUSTOMER_ID
+    `);
+
+    // Same crosswalk as refreshDoi: map WMS CUST_ID -> owning company via the
+    // marketplace SHOP_ID (SC_ID) bridge, keeping only unambiguous (single-company)
+    // mappings for tenant isolation.
+    const crosswalk = await this.snowflake.query(`
+      SELECT DISTINCT m.CUST_ID, a.COMPANY_NAME
+      FROM GDEC_ANALYTICS.SANDBOX.OP_CHN_MAP_V2 m
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a
+        ON a.SHOP_ID::string = m.SC_ID::string
+      WHERE m.SC_ID != '' AND m.CUST_ID != '' AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+    `);
+    const custCompanies = new Map<string, Set<string>>();
+    for (const row of crosswalk as any[]) {
+      let s = custCompanies.get(row.CUST_ID);
+      if (!s) { s = new Set(); custCompanies.set(row.CUST_ID, s); }
+      s.add(row.COMPANY_NAME);
+    }
+    for (const r of data as any[]) {
+      const s = custCompanies.get(r.CUSTOMER_ID);
+      r.COMPANY_NAME = s && s.size === 1 ? [...s][0] : null;
+    }
+
+    this.cache.set('fulfillment', data);
+    const visible = (data as any[]).filter(r => r.COMPANY_NAME).length;
+    this.logger.log(`Fulfillment cached — ${data.length} WMS customers (trailing 90d, ${visible} tenant-mapped)`);
+  }
+
   // ── Lazy-cache plumbing (timeseries/discounts) ───────────────────
 
   // THE single caching seam. Switch to pure on-demand with TENANT_CACHE=ondemand
@@ -1102,7 +1152,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   private fetchProductsRanked(
     from: string, to: string,
     company: string | null, platform: string | null, account: string | null,
-    brand?: string, category?: string, cap = 50, includeInactive?: boolean,
+    brand?: string, category?: string, cap = 50, includeInactive?: boolean, byStore?: boolean,
   ): Promise<any[]> {
     // `cap` is set server-side (50 for Top Products, 1000 for the "all assortment"
     // view) — never from raw user input — so it is safe to inline in the SQL.
@@ -1124,8 +1174,16 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     const bc = this.brandCatWhere(brand, category);
     const dimJoin = bc.sql ? PRODUCT_DIM_JOIN : '';
     if (bc.sql) { where.push(bc.sql.replace(/^ AND /, '')); binds.push(...bc.binds); }
+    // Per-store breakdown: adds the shop (store) to the grain, so the same product
+    // listed in several stores surfaces as one row per store — the "double listings
+    // across different stores" the commercial team flagged — with the store id/name
+    // and the store's SKU exposed (also what the export needs). Default view stays
+    // merged by PRODUCT_NAME across stores/platforms.
+    const storeSelect = byStore ? 'a.SHOP_ID AS STORE_ID,\n        a.SHOP_NAME AS STORE,' : '';
+    const groupBy = byStore ? 'f.PRODUCT_NAME, a.SHOP_ID, a.SHOP_NAME' : 'f.PRODUCT_NAME';
     const sql = `
       SELECT
+        ${storeSelect}
         f.PRODUCT_NAME,
         COUNT(DISTINCT IFF(${IS_VALID_SQL}, f.PLATFORM_ORDER_ID, NULL)) AS ORDERS,
         COUNT(IFF(${IS_VALID_SQL}, f.ORDER_ITEM_SK, NULL))             AS UNITS,
@@ -1143,7 +1201,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       ${dimJoin}
       WHERE ${where.join(' AND ')}
-      GROUP BY f.PRODUCT_NAME
+      GROUP BY ${groupBy}
       QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(f.ORIGINAL_PRODUCT_PRICE) DESC) <= ${rankCap}
       ORDER BY REVENUE DESC
     `;
@@ -1197,7 +1255,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   // other admin loads.
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean; byStore?: boolean },
   ): Promise<any[]> {
     const from = opts.dateFrom || '2023-01-01';
     const to   = opts.dateTo   || new Date().toISOString().slice(0, 10);
@@ -1210,8 +1268,9 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     const category = opts.category && opts.category !== 'all' ? opts.category : undefined;
     const cap = opts.all ? 1000 : 50;  // "all assortment" view lifts the Top-50 cap
     const inc = !!opts.includeInactive;
-    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*', cap, inc });
-    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category, cap, inc);
+    const byStore = !!opts.byStore;
+    const key = JSON.stringify({ c: effCompany ?? '*', from, to, p: platform ?? '*', a: account ?? '*', b: brand ?? '*', cat: category ?? '*', cap, inc, bs: byStore });
+    const run = () => this.fetchProductsRanked(from, to, effCompany, platform, account, brand, category, cap, inc, byStore);
     const fetchFn = (isAdmin && !effCompany) ? () => this.runExclusive(run) : run;
     return this.loadWithCache(
       this.productsRankedCache, this.productsRankedInflight, key, fetchFn, 'products-ranked',
@@ -1314,6 +1373,33 @@ getDoi(companyName: string, isAdmin: boolean) {
     // Standard tenant isolation by COMPANY_NAME (rows tagged in refreshDoi via the
     // OP_CHN_MAP_V2 crosswalk). Shared/unresolved CUST_IDs have COMPANY_NAME = null.
     return data.filter(r => r.COMPANY_NAME === companyName);
+  }
+
+  // Delivery-completeness summary for the active tenant scope. Rates cannot be
+  // averaged across WMS customers, so we SUM the raw line/unit counts for the
+  // tenant's customers and derive each percentage once. Admin = all customers.
+  // A tenant with no WMS customer (e.g. a brand GDEC does not warehouse) returns
+  // CUSTOMERS = 0 and null rates — the UI shows "no fulfillment data".
+  getFulfillment(companyName: string, isAdmin: boolean) {
+    const rows = (this.cache.get('fulfillment') || []) as any[];
+    const scoped = isAdmin ? rows : rows.filter(r => r.COMPANY_NAME === companyName);
+    const sum = (k: string) => scoped.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+    const totalLines = sum('TOTAL_LINES');
+    const ordered = sum('ORDERED_UNITS');
+    const shipped = sum('SHIPPED_UNITS');
+    const closed = sum('CLOSED_LINES');
+    const cancelled = sum('CANCELLED_LINES');
+    const pct = (n: number, d: number) => (d ? Math.round((n / d) * 1000) / 10 : null);
+    return {
+      WINDOW_DAYS: 90,
+      CUSTOMERS: scoped.length,
+      TOTAL_LINES: totalLines,
+      ORDERED_UNITS: ordered,
+      SHIPPED_UNITS: shipped,
+      UNIT_FILL_RATE: pct(shipped, ordered),   // % of ordered volume that shipped
+      SERVED_RATE: pct(closed, totalLines),    // % of order lines fully closed/served
+      CANCEL_RATE: pct(cancelled, totalLines), // % of order lines cancelled
+    };
   }
 
   // Cancellation / return counts — date-filterable, same tenant model as KPIs.

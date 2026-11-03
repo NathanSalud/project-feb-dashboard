@@ -56,7 +56,7 @@ export class DashboardService {
 
   async getProductsRanked(
     companyName: string, isAdmin: boolean,
-    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean },
+    opts: { dateFrom?: string; dateTo?: string; platform?: string; account?: string; company?: string; brand?: string; category?: string; all?: boolean; includeInactive?: boolean; byStore?: boolean },
   ) {
     this.validateDates(opts.dateFrom, opts.dateTo);
     return this.cache.getProductsRanked(companyName, isAdmin, opts);
@@ -84,6 +84,10 @@ export class DashboardService {
 
   getDoi(companyName: string, isAdmin: boolean) {
     return this.cache.getDoi(companyName, isAdmin);
+  }
+
+  getFulfillment(companyName: string, isAdmin: boolean) {
+    return this.cache.getFulfillment(companyName, isAdmin);
   }
 
   getPersonas(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string) {

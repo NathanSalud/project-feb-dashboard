@@ -75,9 +75,10 @@ export class DashboardController {
     @Query('category') category?: string,
     @Query('all') all?: string,
     @Query('includeInactive') includeInactive?: string,
+    @Query('byStore') byStore?: string,
   ) {
     return this.dashboardService.getProductsRanked(req.user.companyName, req.user.isAdmin, {
-      dateFrom, dateTo, platform, account, company, brand, category, all: all === 'true', includeInactive: includeInactive === 'true',
+      dateFrom, dateTo, platform, account, company, brand, category, all: all === 'true', includeInactive: includeInactive === 'true', byStore: byStore === 'true',
     });
   }
 
@@ -133,6 +134,14 @@ export class DashboardController {
   @Get('doi')
   getDoi(@Request() req) {
     return this.dashboardService.getDoi(
+      req.user.companyName,
+      req.user.isAdmin,
+    );
+  }
+
+  @Get('fulfillment')
+  getFulfillment(@Request() req) {
+    return this.dashboardService.getFulfillment(
       req.user.companyName,
       req.user.isAdmin,
     );
