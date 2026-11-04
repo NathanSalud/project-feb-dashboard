@@ -107,6 +107,15 @@ const GEO_PERIODS: Record<string, string> = {
 };
 const GEO_DEFAULT_PERIOD = 'overall';
 
+// WMS customers that physically share ONE warehouse account across more than one
+// marketplace company, confirmed by the business. Their inventory and fulfillment
+// are a single pooled operation that cannot be split by company, so they are shown
+// to EVERY company they serve (a combined tenant) rather than hidden by the normal
+// single-owner isolation rule. Example: 'NESTLE' pools Nestlé Philippines, Inc. and
+// Wyeth Nutrition Philippines. Any other CUST_ID that maps to >1 company stays
+// hidden (treated as unresolved) until it is confirmed and added here.
+const SHARED_WMS_CUSTOMERS = new Set<string>(['NESTLE']);
+
 @Injectable()
 export class CacheService implements OnModuleInit {
   private readonly logger = new Logger(CacheService.name);
@@ -1006,9 +1015,17 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       const entry = custMap.get(r.CUSTOMER_ID);
       if (entry && entry.companies.size === 1) {
         r.COMPANY_NAME = [...entry.companies][0];
+        r.COMPANY_NAMES = [...entry.companies];
+        r.ACCOUNT_NAMES = [...entry.accounts];
+      } else if (entry && SHARED_WMS_CUSTOMERS.has(r.CUSTOMER_ID)) {
+        // Confirmed shared physical account → combined tenant: visible to every
+        // company it serves (COMPANY_NAMES), with no single owner (COMPANY_NAME null).
+        r.COMPANY_NAME = null;
+        r.COMPANY_NAMES = [...entry.companies];
         r.ACCOUNT_NAMES = [...entry.accounts];
       } else {
-        r.COMPANY_NAME = null; // shared across companies or unresolved → tenant-restricted
+        r.COMPANY_NAME = null; // shared across companies (unconfirmed) or unresolved → tenant-restricted
+        r.COMPANY_NAMES = [];
         r.ACCOUNT_NAMES = [];
       }
     }
@@ -1024,9 +1041,10 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
   // what was ordered actually shipped, and how many order lines closed in full vs
   // were cancelled. Independent of the dashboard date filters (like DOI — this is
   // a current ops health read). Aggregated per WMS CUSTOMER_ID, then tagged with
-  // COMPANY_NAME via the SAME OP_CHN_MAP_V2 crosswalk DOI uses, so it isolates by
-  // tenant identically. A CUST_ID shared across >1 company (or unresolved) is left
-  // COMPANY_NAME = null so tenants can't see it; admins bypass the filter.
+  // company via the SAME OP_CHN_MAP_V2 crosswalk DOI uses, so it isolates by tenant
+  // identically — including the SHARED_WMS_CUSTOMERS combined-tenant rule. A CUST_ID
+  // that maps to >1 company and is NOT a confirmed shared account stays hidden;
+  // admins bypass the filter.
   private async refreshFulfillment() {
     const data = await this.snowflake.query(`
       SELECT
@@ -1059,11 +1077,21 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     }
     for (const r of data as any[]) {
       const s = custCompanies.get(r.CUSTOMER_ID);
-      r.COMPANY_NAME = s && s.size === 1 ? [...s][0] : null;
+      if (s && s.size === 1) {
+        r.COMPANY_NAME = [...s][0];
+        r.COMPANY_NAMES = [...s];
+      } else if (s && SHARED_WMS_CUSTOMERS.has(r.CUSTOMER_ID)) {
+        // Confirmed shared physical account → combined tenant (see SHARED_WMS_CUSTOMERS).
+        r.COMPANY_NAME = null;
+        r.COMPANY_NAMES = [...s];
+      } else {
+        r.COMPANY_NAME = null;
+        r.COMPANY_NAMES = [];
+      }
     }
 
     this.cache.set('fulfillment', data);
-    const visible = (data as any[]).filter(r => r.COMPANY_NAME).length;
+    const visible = (data as any[]).filter(r => (r.COMPANY_NAMES || []).length).length;
     this.logger.log(`Fulfillment cached — ${data.length} WMS customers (trailing 90d, ${visible} tenant-mapped)`);
   }
 
@@ -1370,9 +1398,10 @@ async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dat
 getDoi(companyName: string, isAdmin: boolean) {
     const data = (this.cache.get('doi') || []) as any[];
     if (isAdmin) return data;
-    // Standard tenant isolation by COMPANY_NAME (rows tagged in refreshDoi via the
-    // OP_CHN_MAP_V2 crosswalk). Shared/unresolved CUST_IDs have COMPANY_NAME = null.
-    return data.filter(r => r.COMPANY_NAME === companyName);
+    // Standard tenant isolation by company (rows tagged in refreshDoi via the
+    // OP_CHN_MAP_V2 crosswalk). COMPANY_NAMES holds every company a row is visible to
+    // — one entry for a normal customer, several for a confirmed shared/combined one.
+    return data.filter(r => (r.COMPANY_NAMES || []).includes(companyName));
   }
 
   // Delivery-completeness summary for the active tenant scope. Rates cannot be
@@ -1382,7 +1411,7 @@ getDoi(companyName: string, isAdmin: boolean) {
   // CUSTOMERS = 0 and null rates — the UI shows "no fulfillment data".
   getFulfillment(companyName: string, isAdmin: boolean) {
     const rows = (this.cache.get('fulfillment') || []) as any[];
-    const scoped = isAdmin ? rows : rows.filter(r => r.COMPANY_NAME === companyName);
+    const scoped = isAdmin ? rows : rows.filter(r => (r.COMPANY_NAMES || []).includes(companyName));
     const sum = (k: string) => scoped.reduce((a, r) => a + (Number(r[k]) || 0), 0);
     const totalLines = sum('TOTAL_LINES');
     const ordered = sum('ORDERED_UNITS');

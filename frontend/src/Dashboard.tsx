@@ -582,7 +582,11 @@ export default function Dashboard() {
   const invBySku = (() => {
     const m: Record<string, number> = {};
     (doiRaw as any[]).forEach((r: any) => {
-      if (cCompany !== 'all' && r.COMPANY_NAME !== cCompany) return;
+      // COMPANY_NAMES lists every company a WMS row is visible to (one normally,
+      // several for a confirmed shared/combined warehouse customer); fall back to the
+      // legacy single COMPANY_NAME if an older cached payload lacks the array.
+      const rowCompanies = (r.COMPANY_NAMES && r.COMPANY_NAMES.length) ? r.COMPANY_NAMES : (r.COMPANY_NAME ? [r.COMPANY_NAME] : []);
+      if (cCompany !== 'all' && !rowCompanies.includes(cCompany)) return;
       if (cAcc !== 'all' && !((r.ACCOUNT_NAMES || []).includes(cAcc))) return;
       const sku = String(r.PRODUCT_SKU || '');
       if (!sku) return;
