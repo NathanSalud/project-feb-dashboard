@@ -401,13 +401,29 @@ export class CacheService implements OnModuleInit {
   // Distinct brand/category options available per company, for the dashboard
   // dropdowns. Built once at refresh from DIM_PRODUCTS × active accounts (small).
   private async refreshProductDims() {
+    // Brand & Category dropdown options. SALES-based, not raw catalog: a brand only
+    // appears for a tenant if that tenant actually SOLD it (real revenue in the
+    // fact), so catalog noise never surfaces as a filter — one-off gift-with-
+    // purchase (GWP) freebies carry a foreign brand at ₱0 (e.g. a Berocca sachet
+    // bundled into a San Miguel order) and are excluded by the ORIGINAL_PRODUCT_PRICE
+    // > 0 guard, and placeholder brand tags ("No Brand", "Unknown", …) are dropped
+    // outright. Brand/category still come from DIM_PRODUCTS (the join key is
+    // SELLER_SKU, verified 1:1); the fact join just restricts to brands with sales.
+    // Computed once per refresh into a tiny cached list, so getProductDims stays a
+    // cheap in-memory filter.
     const data = await this.snowflake.query(`
       SELECT DISTINCT a.COMPANY_NAME, a.ACCOUNT_NAME, a.PLATFORM, p.BRAND_NAME, p.PRODUCT_CATEGORY
-      FROM GDEC_DATAMART.GOLD_SCHEMA.DIM_PRODUCTS p
-      INNER JOIN ${ACCOUNTS_SQL} a ON p.SHOP_ID = a.SHOP_ID
-      WHERE a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
+      FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
+      INNER JOIN ${ACCOUNTS_SQL} a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
+      INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_PRODUCTS p
+        ON p.PLATFORM = f.PLATFORM AND p.SHOP_ID = f.SHOP_ID AND p.PRODUCT_SKU = f.SELLER_SKU
+      WHERE f.ITEM_STATUS IN (${VALID_REVENUE_STATUS_SQL})
+        AND f.ORDER_DATE >= '2023-01-01'
+        AND f.ORIGINAL_PRODUCT_PRICE > 0
+        AND a.IS_ACTIVE = TRUE AND a.ACCOUNT_NAME != 's'
         AND p.BRAND_NAME IS NOT NULL AND p.BRAND_NAME != ''
         AND p.PRODUCT_CATEGORY IS NOT NULL AND p.PRODUCT_CATEGORY != ''
+        AND UPPER(TRIM(p.BRAND_NAME)) NOT IN ('NO BRAND','NOT AVAILABLE','UNKNOWN','N/A','NONE','UNBRANDED','NA','-')
     `);
     this.cache.set('productDims', data);
     this.logger.log(`Product dims cached — ${data.length} rows`);
@@ -1224,7 +1240,13 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         -- SKUs/platforms, so expose a representative SKU plus a distinct-SKU count the
         -- UI can use to flag a name that spans more than one SKU.
         ANY_VALUE(f.SELLER_SKU)                                         AS PRODUCT_SKU,
-        COUNT(DISTINCT f.SELLER_SKU)                                    AS SKU_COUNT
+        COUNT(DISTINCT f.SELLER_SKU)                                    AS SKU_COUNT,
+        -- Platform-side identifiers for the export (commercial request): the
+        -- platform's own SKU (Lazada SKU / TikTok SKU; Shopee leaves it "N/A") and
+        -- the platform product/variation ID. Representative values per merged row;
+        -- in by-store mode the grain is one store so they are exact for that listing.
+        ANY_VALUE(f.PLATFORM_SKU)                                       AS PLATFORM_SKU,
+        ANY_VALUE(f.PRODUCT_ID)                                         AS PRODUCT_ID
       FROM GDEC_ANALYTICS.DATA_QUALITY_RECOVERY.FACT_PLATFORM_ORDER_ITEMS_ENRICHED f
       INNER JOIN GDEC_DATAMART.GOLD_SCHEMA.DIM_MARKETPLACE_ACCOUNTS a ON f.SHOP_ID = a.SHOP_ID AND ${ONBOARD_FLOOR_SQL}
       ${dimJoin}
