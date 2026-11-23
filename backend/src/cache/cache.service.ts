@@ -160,6 +160,19 @@ export class CacheService implements OnModuleInit {
   private newVsExistingInflight = new Map<string, Promise<any[]>>();
   private adminMutex: Promise<unknown> = Promise.resolve(); // serializes heavy admin loads
 
+  // Admin ("All Companies") timeseries/discounts are the single heaviest responses:
+  // the full account×platform×day history (~200k+ rows). Re-running them live on
+  // every admin request is what made the admin dashboard time out, so they get their
+  // own dedicated cache slot — warmed in the nightly refresh, de-duped against
+  // concurrent misses, and held for a full day. This is independent of the per-tenant
+  // LRU (so admin never competes for a slot or gets evicted) and of TENANT_CACHE_MODE
+  // (admin is always cached — it is never safe to run uncached). Keyed by dataset name.
+  private adminSlots = new Map<string, { data: any[]; expiresAt: number }>();
+  private adminInflight = new Map<string, Promise<any[]>>();
+  // Held until the next nightly warm (the fact only changes nightly), so a long TTL
+  // avoids a redundant full scan mid-day while still self-healing after a restart.
+  private readonly ADMIN_TTL_MS = Number(process.env.ADMIN_CACHE_TTL_MS ?? 26 * 60 * 60 * 1000); // 26h
+
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
   // The four windows of each dataset are independent, so warming them in a small
   // pool turns startup from sum-of-N into ~sum/limit — the main startup speed-up —
@@ -186,12 +199,14 @@ export class CacheService implements OnModuleInit {
   async onModuleInit() {
     this.logger.log('Populating cache on startup...');
     await this.refreshAll();
+    void this.warmAdmin(); // warm the heavy admin payloads in the background (non-blocking)
 
     // Schedule nightly refresh at midnight PHT (UTC+8) = 16:00 UTC
     cron.schedule('0 16 * * *', async () => {
       this.logger.log('Running scheduled midnight PHT cache refresh...');
       await this.refreshAll();
       this.clearLazyCaches(); // drop per-tenant slices so they reload fresh
+      void this.warmAdmin();  // repopulate the admin slots cleared just above
     });
   }
 
@@ -1161,6 +1176,48 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     return run;
   }
 
+  // Dedicated admin ("All Companies") cache: single slot per dataset, TTL-bounded,
+  // with in-flight de-dupe so a cold first load (or a request that raced the nightly
+  // warm) is computed once and shared. Deliberately NOT gated by TENANT_CACHE_MODE —
+  // the admin full-history scan is never run uncached. The fetchFn is expected to be
+  // wrapped in runExclusive by the caller so two heavy admin loads can't spike memory.
+  private loadAdminCached(key: string, fetchFn: () => Promise<any[]>, label: string): Promise<any[]> {
+    const entry = this.adminSlots.get(key);
+    if (entry && Date.now() <= entry.expiresAt) {
+      const ageMin = Math.round((this.ADMIN_TTL_MS - (entry.expiresAt - Date.now())) / 60000);
+      this.logger.log(`[${label}] admin cache HIT age=${ageMin}m rows=${entry.data.length}`);
+      return Promise.resolve(entry.data);
+    }
+    if (entry) this.adminSlots.delete(key); // expired
+    const existing = this.adminInflight.get(key);
+    if (existing) return existing; // de-dupe concurrent misses
+    this.logger.log(`[${label}] admin cache MISS -> Snowflake`);
+    const p = fetchFn()
+      .then(data => {
+        this.adminSlots.set(key, { data, expiresAt: Date.now() + this.ADMIN_TTL_MS });
+        return data;
+      })
+      .finally(() => this.adminInflight.delete(key)); // always clear, even on failure
+    this.adminInflight.set(key, p);
+    return p;
+  }
+
+  // Precompute the admin timeseries + discounts payloads so the first admin page load
+  // of the day reads from memory instead of paying a cold-warehouse full-fact scan.
+  // Fire-and-forget from startup and after the nightly refresh; failures are logged,
+  // not fatal (a later admin request will retry via loadAdminCached).
+  private async warmAdmin() {
+    try {
+      await Promise.all([
+        this.loadAdminCached('timeseries', () => this.runExclusive(() => this.fetchAllTimeSeries()), 'timeseries'),
+        this.loadAdminCached('discounts', () => this.runExclusive(() => this.fetchAllDiscounts()), 'discounts'),
+      ]);
+      this.logger.log('Admin (All Companies) timeseries + discounts warmed');
+    } catch (err) {
+      this.logger.error('Admin warm failed', (err as Error).message);
+    }
+  }
+
   // Drop all per-tenant slices (called by the nightly cron so data refreshes).
   private clearLazyCaches() {
     this.timeseriesByCompany.clear();
@@ -1183,7 +1240,9 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     this.personasBCInflight.clear();
     this.newVsExistingCache.clear();
     this.newVsExistingInflight.clear();
-    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, brand/category variants)');
+    this.adminSlots.clear();
+    this.adminInflight.clear();
+    this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, admin slots, brand/category variants)');
   }
 
   // ── Top Products (date-aware, cross-platform merged) ─────────────
@@ -1279,7 +1338,7 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         );
   } else {
     data = isAdmin
-      ? await this.runExclusive(() => this.fetchAllTimeSeries()) // all tenants, serialized, uncached
+      ? await this.loadAdminCached('timeseries', () => this.runExclusive(() => this.fetchAllTimeSeries()), 'timeseries')
       : await this.loadWithCache(
           this.timeseriesByCompany, this.timeseriesInflight,
           companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
@@ -1408,7 +1467,7 @@ async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dat
         );
   } else {
     data = isAdmin
-      ? await this.runExclusive(() => this.fetchAllDiscounts()) // all tenants, serialized, uncached
+      ? await this.loadAdminCached('discounts', () => this.runExclusive(() => this.fetchAllDiscounts()), 'discounts')
       : await this.loadWithCache(
           this.discountsByCompany, this.discountsInflight,
           companyName, c => this.fetchTenantDiscounts(c), 'discounts',
