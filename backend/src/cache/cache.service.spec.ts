@@ -56,16 +56,17 @@ describe('CacheService lazy per-tenant caching', () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
-  it('admin path queries all tenants, unbound, and is NOT cached', async () => {
+  it('admin path queries all tenants unbound, and caches in the admin slot', async () => {
     query.mockResolvedValue([tenantRow('A'), tenantRow('B')]);
     const r1 = await svc.getTimeSeries('GDEC Admin', true);
     expect(r1).toHaveLength(2); // sees multiple companies
     expect(query.mock.calls[0][0]).not.toContain('a.COMPANY_NAME = ?');
     expect(query.mock.calls[0][1]).toBeUndefined();
-    expect((svc as any).timeseriesByCompany.size).toBe(0); // nothing resident
+    expect((svc as any).timeseriesByCompany.size).toBe(0); // not in the per-tenant LRU
+    expect((svc as any).adminSlots.has('timeseries')).toBe(true); // resident in the dedicated admin slot
 
     await svc.getTimeSeries('GDEC Admin', true);
-    expect(query).toHaveBeenCalledTimes(2); // re-queried, uncached
+    expect(query).toHaveBeenCalledTimes(1); // second admin request served from the admin cache
   });
 
   it('serializes concurrent admin loads (mutex → max concurrency 1)', async () => {

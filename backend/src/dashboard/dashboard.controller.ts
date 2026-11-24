@@ -110,8 +110,10 @@ export class DashboardController {
     @Query('brand') brand?: string,
     @Query('category') category?: string,
     @Query('includeInactive') includeInactive?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
   ) {
-    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period, brand, category, includeInactive === 'true');
+    return this.dashboardService.getGeo(req.user.companyName, req.user.isAdmin, period, brand, category, includeInactive === 'true', dateFrom, dateTo);
   }
 
   @Get('discounts')

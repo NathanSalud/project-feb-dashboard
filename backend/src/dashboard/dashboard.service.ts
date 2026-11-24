@@ -73,8 +73,9 @@ export class DashboardService {
     return this.cache.getAccounts();
   }
 
-  getGeo(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string, includeInactive?: boolean) {
-  return this.cache.getGeo(companyName, isAdmin, period, brand, category, includeInactive);
+  getGeo(companyName: string, isAdmin: boolean, period?: string, brand?: string, category?: string, includeInactive?: boolean, dateFrom?: string, dateTo?: string) {
+  this.validateDates(dateFrom, dateTo); // custom Sales-by-Province range (feedback #25)
+  return this.cache.getGeo(companyName, isAdmin, period, brand, category, includeInactive, dateFrom, dateTo);
 }
 
   async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dateTo?: string, brand?: string, category?: string, includeInactive?: boolean) {

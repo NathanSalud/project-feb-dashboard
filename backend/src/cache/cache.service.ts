@@ -150,6 +150,11 @@ export class CacheService implements OnModuleInit {
   // Brand/category-filtered geo, retention and personas (on demand).
   private geoBCCache = new Map<string, { data: any[]; expiresAt: number }>();
   private geoBCInflight = new Map<string, Promise<any[]>>();
+  // Custom date-range Sales-by-Province (feedback #25): the preset windows are
+  // precomputed, but an arbitrary from/to range cannot be — computed on demand and
+  // cached per (company, from, to, brand, category) with the same TTL/LRU bounds.
+  private geoRangeCache = new Map<string, { data: any[]; expiresAt: number }>();
+  private geoRangeInflight = new Map<string, Promise<any[]>>();
   private retentionBCCache = new Map<string, { data: any[]; expiresAt: number }>();
   private retentionBCInflight = new Map<string, Promise<any[]>>();
   private personasBCCache = new Map<string, { data: any[]; expiresAt: number }>();
@@ -994,7 +999,8 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         SELECT
           CUSTOMER_ID,
           PRODUCT_SKU,
-          SUM(QUANTITY_ORDERED) AS QTY_ORDERED_3M
+          SUM(QUANTITY_ORDERED) AS QTY_ORDERED_3M,
+          SUM(QUANTITY_SHIPPED) AS QTY_SHIPPED_3M
         FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_WMS_ORDER_ITEMS
         WHERE ORDER_CREATED_AT_PHT >= DATEADD('day', -90, CURRENT_DATE())
         GROUP BY CUSTOMER_ID, PRODUCT_SKU
@@ -1009,7 +1015,13 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         CASE
           WHEN COALESCE(o.QTY_ORDERED_3M, 0) = 0 THEN NULL
           ELSE ROUND(i.INVENTORY_QTY / (o.QTY_ORDERED_3M / 90), 1)
-        END AS DOI
+        END AS DOI,
+        -- Per-SKU fill rate (feedback #15): share of trailing-90d ordered units that
+        -- actually shipped, per warehouse SKU. NULL when nothing was ordered in-window.
+        CASE
+          WHEN COALESCE(o.QTY_ORDERED_3M, 0) = 0 THEN NULL
+          ELSE ROUND(COALESCE(o.QTY_SHIPPED_3M, 0) / o.QTY_ORDERED_3M * 100, 1)
+        END AS FILL_RATE
       FROM inventory i
       LEFT JOIN orders_3m o
         ON i.CUSTOMER_ID = o.CUSTOMER_ID
@@ -1042,7 +1054,31 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
       entry.accounts.add(row.ACCOUNT_NAME);
     }
 
+    // feedback #13 (inventory accuracy): the Top Products inventory column matches a
+    // product's marketplace SELLER SKU against warehouse stock, but WMS keys stock by
+    // GDEC's INTERNAL SKU, so a direct string match missed most warehoused items (and
+    // mis-stated others). Pull the seller->internal map from the component layer
+    // (RESOLVED_SKU is the internal SKU) so each WMS inventory row can advertise every
+    // marketplace seller SKU that resolves to it; the frontend then keys inventory by
+    // seller SKU and matches correctly. Distinct pairs only (~tens of k rows).
+    const sellerXwalk = await this.snowflake.query(`
+      SELECT DISTINCT RESOLVED_SKU, ORDER_LINE_SELLER_SKU AS SELLER_SKU
+      FROM GDEC_DATAMART.GOLD_SCHEMA.FACT_ORDER_ITEMS_BY_COMPONENT
+      WHERE ORDER_LINE_SELLER_SKU IS NOT NULL AND ORDER_LINE_SELLER_SKU <> ''
+        AND RESOLVED_SKU IS NOT NULL AND RESOLVED_SKU <> ''
+        AND ORDER_DATE >= '2023-01-01'
+    `);
+    const resolvedToSellers = new Map<string, string[]>();
+    for (const row of sellerXwalk as any[]) {
+      let arr = resolvedToSellers.get(row.RESOLVED_SKU);
+      if (!arr) { arr = []; resolvedToSellers.set(row.RESOLVED_SKU, arr); }
+      arr.push(row.SELLER_SKU);
+    }
+
     for (const r of data as any[]) {
+      // The WMS inventory key (PRODUCT_SKU) is the internal SKU; list every seller SKU
+      // it maps to so the Top Products inventory lookup can match on seller SKU.
+      r.SELLER_SKUS = resolvedToSellers.get(r.PRODUCT_SKU) || [];
       const entry = custMap.get(r.CUSTOMER_ID);
       if (entry && entry.companies.size === 1) {
         r.COMPANY_NAME = [...entry.companies][0];
@@ -1240,6 +1276,8 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     this.personasBCInflight.clear();
     this.newVsExistingCache.clear();
     this.newVsExistingInflight.clear();
+    this.geoRangeCache.clear();
+    this.geoRangeInflight.clear();
     this.adminSlots.clear();
     this.adminInflight.clear();
     this.logger.log('Lazy per-tenant caches cleared (timeseries, discounts, products-ranked, admin slots, brand/category variants)');
@@ -1438,7 +1476,24 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
     return this.cache.get('accounts') || [];
   }
 
-  async getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD, brand?: string, category?: string, includeInactive?: boolean) {
+  async getGeo(companyName: string, isAdmin: boolean, period = GEO_DEFAULT_PERIOD, brand?: string, category?: string, includeInactive?: boolean, dateFrom?: string, dateTo?: string) {
+  // Custom date range (feedback #25): run on demand and cache per (company, from, to,
+  // brand, category). Admin (all tenants) is serialized to avoid two heavy scans at
+  // once. Dates are validated to a strict YYYY-MM-DD shape upstream (DashboardService);
+  // the regex guard here is defence-in-depth before they are embedded in the floor, so
+  // no untrusted text can reach the SQL even if a caller skips the service layer.
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (dateFrom && dateTo && dateRe.test(dateFrom) && dateRe.test(dateTo)) {
+    const floor = `f.ORDER_DATE >= '${dateFrom}' AND f.ORDER_DATE <= '${dateTo}'`;
+    const key = `${companyName}|${dateFrom}|${dateTo}|${brand || 'all'}|${category || 'all'}`;
+    const data = isAdmin
+      ? await this.runExclusive(() => this.fetchGeoEnriched(null, floor, brand, category))
+      : await this.loadWithCache(
+          this.geoRangeCache, this.geoRangeInflight,
+          key, () => this.fetchGeoEnriched(companyName, floor, brand, category), 'geo-range',
+        );
+    return this.filterCompany(data, companyName, isAdmin, includeInactive);
+  }
   const per = GEO_PERIODS[period] ? period : GEO_DEFAULT_PERIOD;
   if (this.brandCatActive(brand, category)) {
     const floor = GEO_PERIODS[per];

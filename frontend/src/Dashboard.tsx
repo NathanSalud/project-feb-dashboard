@@ -180,9 +180,12 @@ export default function Dashboard() {
     queryFn: () => getProductsRanked(qDateFrom, qDateTo, cPlat, cAcc, cCompany, cBrand, cCategory, prodShowAll, includeInactive, prodByStore).then(r => r.data),
     placeholderData: keepPreviousData,
   });
+  // 'custom' = use the dashboard's From/To range on Sales by Province (feedback #25);
+  // any preset key uses its precomputed window. Dates only enter the key/query when custom.
+  const geoCustom = geoPeriod === 'custom';
   const { data: geoRaw = [] } = useQuery({
-    queryKey: ['geo', geoPeriod, cBrand, cCategory, includeInactive],
-    queryFn: () => getGeo(geoPeriod, cBrand, cCategory, includeInactive).then(r => r.data),
+    queryKey: ['geo', geoPeriod, cBrand, cCategory, includeInactive, geoCustom ? qDateFrom : '', geoCustom ? qDateTo : ''],
+    queryFn: () => getGeo(geoCustom ? 'overall' : geoPeriod, cBrand, cCategory, includeInactive, geoCustom ? qDateFrom : undefined, geoCustom ? qDateTo : undefined).then(r => r.data),
     placeholderData: keepPreviousData,
   });
   const { data: discountsRaw = [], isFetching: dFetch } = useQuery({
@@ -576,9 +579,10 @@ export default function Dashboard() {
     : (products as any[]).reduce((s: number, p: any) => s + Number(p.REVENUE || 0), 0);
   // Current warehouse inventory by SKU, from the already-loaded DOI (WMS) data, scoped
   // to the active company/account. WMS stock is physical, so it's platform-independent
-  // and date-independent (a point-in-time snapshot). Matched to Top Products on SKU —
-  // most WMS SKUs line up with marketplace seller SKUs; products with no WMS match (or
-  // no stock) show "—". Multi-SKU product names reflect only their representative SKU.
+  // and date-independent (a point-in-time snapshot). Matched to Top Products via the
+  // backend's seller->internal SKU crosswalk (SELLER_SKUS), so warehoused items resolve
+  // even though WMS and the marketplace use different SKU codes; products genuinely not
+  // warehoused (or out of stock) show "—". Multi-SKU names reflect their representative SKU.
   const invBySku = (() => {
     const m: Record<string, number> = {};
     (doiRaw as any[]).forEach((r: any) => {
@@ -588,9 +592,19 @@ export default function Dashboard() {
       const rowCompanies = (r.COMPANY_NAMES && r.COMPANY_NAMES.length) ? r.COMPANY_NAMES : (r.COMPANY_NAME ? [r.COMPANY_NAME] : []);
       if (cCompany !== 'all' && !rowCompanies.includes(cCompany)) return;
       if (cAcc !== 'all' && !((r.ACCOUNT_NAMES || []).includes(cAcc))) return;
-      const sku = String(r.PRODUCT_SKU || '');
-      if (!sku) return;
-      m[sku] = (m[sku] || 0) + Number(r.INVENTORY_QTY || 0);
+      const qty = Number(r.INVENTORY_QTY || 0);
+      if (!qty) return;
+      // WMS keys stock by GDEC's internal SKU, which rarely equals the marketplace
+      // seller SKU Top Products is keyed on — so the backend attaches SELLER_SKUS, every
+      // seller SKU that resolves to this internal SKU. Advertise the stock under each so
+      // the lookup matches on seller SKU. Fall back to the raw WMS SKU when the crosswalk
+      // has no mapping (so a WMS SKU that already equals a seller SKU still matches).
+      const keys: string[] = (r.SELLER_SKUS && r.SELLER_SKUS.length) ? r.SELLER_SKUS : [String(r.PRODUCT_SKU || '')];
+      keys.forEach((k: string) => {
+        const sku = String(k || '');
+        if (!sku) return;
+        m[sku] = (m[sku] || 0) + qty;
+      });
     });
     return m;
   })();
@@ -1183,11 +1197,12 @@ export default function Dashboard() {
             {activeTab === 'doi' && (
             <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: 12 }}>
               <thead><tr>
-                {['CUSTOMER_ID','PRODUCT_SKU','PRODUCT_NAME','INVENTORY_QTY','ORDERED_3M','DAILY_AVG_SOLD','DOI'].map((col, i) => (
+                {['CUSTOMER_ID','PRODUCT_SKU','PRODUCT_NAME','INVENTORY_QTY','ORDERED_3M','DAILY_AVG_SOLD','DOI','FILL_RATE'].map((col, i) => (
                   <th key={col}
                     onClick={() => handleSort(col)}
+                    title={col === 'FILL_RATE' ? 'Units shipped ÷ units ordered, trailing 90 days, per SKU' : undefined}
                     style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', fontSize: 9.5, color: TEXT3, fontWeight: 500, padding: '0 0 10px', borderBottom: `1px solid ${BORDER}`, textAlign: i >= 3 ? 'right' : 'left' }}>
-                    {col === 'CUSTOMER_ID' ? 'Customer' : col === 'PRODUCT_SKU' ? 'SKU' : col === 'PRODUCT_NAME' ? 'Product' : col === 'INVENTORY_QTY' ? 'Inventory Qty' : col === 'ORDERED_3M' ? 'Ordered (3M)' : col === 'DAILY_AVG_SOLD' ? 'Daily Avg' : 'DOI (Days)'}
+                    {col === 'CUSTOMER_ID' ? 'Customer' : col === 'PRODUCT_SKU' ? 'SKU' : col === 'PRODUCT_NAME' ? 'Product' : col === 'INVENTORY_QTY' ? 'Inventory Qty' : col === 'ORDERED_3M' ? 'Ordered (3M)' : col === 'DAILY_AVG_SOLD' ? 'Daily Avg' : col === 'DOI' ? 'DOI (Days)' : 'Fill Rate 90d'}
                     {' '}{sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
                   </th>
                 ))}
@@ -1205,6 +1220,9 @@ export default function Dashboard() {
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.DAILY_AVG_SOLD).toLocaleString()}</td>
                       <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', color: isLow ? '#d32f2f' : r.DOI === null ? TEXT3 : TEXT1, fontWeight: isLow ? 700 : 400, fontFamily: 'JetBrains Mono, monospace' }}>
                         {r.DOI === null ? 'No orders' : `${Number(r.DOI).toLocaleString()} days`}
+                      </td>
+                      <td style={{ padding: '9px 0', borderBottom: `1px solid ${BORDER}`, textAlign: 'right', color: r.FILL_RATE == null ? TEXT3 : TEXT1, fontFamily: 'JetBrains Mono, monospace' }}>
+                        {r.FILL_RATE == null ? '—' : `${Number(r.FILL_RATE).toLocaleString()}%`}
                       </td>
                     </tr>
                   );
@@ -1247,6 +1265,12 @@ export default function Dashboard() {
                     {p.label}
                   </button>
                 ))}
+                {/* Custom range (feedback #25): follows the dashboard's From/To date filter. */}
+                <button key="custom" onClick={() => { setGeoPeriod('custom'); posthog.capture('dashboard_geo_period_changed', { period: 'custom' }); }}
+                  title="Use the dashboard's From / To date range"
+                  style={{ padding: '3px 9px', borderRadius: 7, border: `1px solid ${geoCustom ? TEAL : BORDER}`, fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer', background: geoCustom ? 'rgba(26,122,138,0.1)' : WHITE, color: geoCustom ? TEAL : TEXT2 }}>
+                  Custom range
+                </button>
                 <button onClick={() => setGeoShowAll(v => !v)}
                   style={{ padding: '3px 9px', borderRadius: 7, border: `1px solid ${geoShowAll ? TEAL : BORDER}`, fontSize: 10.5, fontFamily: 'inherit', cursor: 'pointer', background: geoShowAll ? 'rgba(26,122,138,0.1)' : WHITE, color: geoShowAll ? TEAL : TEXT2 }}>
                   {geoShowAll ? 'Top 10' : 'View all'}
@@ -1254,7 +1278,7 @@ export default function Dashboard() {
                 {miniExport(geoSorted, 'sales_by_province.csv')}
               </div>
             </div>
-            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards'}</div>
+            <div style={{ fontSize: 10.5, color: TEXT3, marginBottom: 14 }}>{geoShowAll ? `All ${geoData.length} provinces` : 'Top 10 provinces'} by GMV · {geoCustom ? `${qDateFrom} to ${qDateTo} · follows date filter` : (GEO_PERIODS.find(p => p.key === geoPeriod)?.note ?? 'all time · 2023 onwards')}</div>
             <ResponsiveContainer width="100%" height={geoShowAll ? Math.max(220, geoData.length * 20) : 220}>
               <BarChart data={geoData} layout="vertical" margin={{ left: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />

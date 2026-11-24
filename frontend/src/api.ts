@@ -95,8 +95,10 @@ export const getProductsRanked = (
 export const getAccounts = () =>
   api.get('/dashboard/accounts');
 
-export const getGeo = (period = 'overall', brand?: string, category?: string, inc?: boolean) =>
-  api.get('/dashboard/geo', { params: { period, brand, category, includeInactive: incParam(inc) } });
+// `dateFrom`/`dateTo` (feedback #25) switch Sales by Province to a custom range; when
+// both are set the backend ignores `period` and computes that exact window on demand.
+export const getGeo = (period = 'overall', brand?: string, category?: string, inc?: boolean, dateFrom?: string, dateTo?: string) =>
+  api.get('/dashboard/geo', { params: { period, brand, category, includeInactive: incParam(inc), dateFrom, dateTo } });
 
 export const getDiscounts = (dateFrom?: string, dateTo?: string, brand?: string, category?: string, inc?: boolean) =>
   api.get('/dashboard/discounts', { params: { dateFrom, dateTo, brand, category, includeInactive: incParam(inc) } });
