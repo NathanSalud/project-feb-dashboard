@@ -57,6 +57,7 @@ describe('CacheService lazy per-tenant caching', () => {
   });
 
   it('admin path queries all tenants unbound, and caches in the admin slot', async () => {
+    (svc as any).ADMIN_HEAVY_ENABLED = true; // admin heavy payloads are gated off by default
     query.mockResolvedValue([tenantRow('A'), tenantRow('B')]);
     const r1 = await svc.getTimeSeries('GDEC Admin', true);
     expect(r1).toHaveLength(2); // sees multiple companies
@@ -69,7 +70,17 @@ describe('CacheService lazy per-tenant caching', () => {
     expect(query).toHaveBeenCalledTimes(1); // second admin request served from the admin cache
   });
 
+  it('gates admin heavy payloads off by default: returns [] and never queries', async () => {
+    query.mockResolvedValue([tenantRow('A'), tenantRow('B')]);
+    const ts = await svc.getTimeSeries('GDEC Admin', true);
+    const disc = await svc.getDiscounts('GDEC Admin', true);
+    expect(ts).toEqual([]);   // no admin payload built
+    expect(disc).toEqual([]);
+    expect(query).not.toHaveBeenCalled(); // never hits Snowflake → cannot OOM
+  });
+
   it('serializes concurrent admin loads (mutex → max concurrency 1)', async () => {
+    (svc as any).ADMIN_HEAVY_ENABLED = true; // admin heavy payloads are gated off by default
     let active = 0;
     let maxActive = 0;
     query.mockImplementation(

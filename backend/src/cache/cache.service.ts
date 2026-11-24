@@ -177,6 +177,14 @@ export class CacheService implements OnModuleInit {
   // Held until the next nightly warm (the fact only changes nightly), so a long TTL
   // avoids a redundant full scan mid-day while still self-healing after a restart.
   private readonly ADMIN_TTL_MS = Number(process.env.ADMIN_CACHE_TTL_MS ?? 26 * 60 * 60 * 1000); // 26h
+  // The admin ("All Companies") timeseries/discounts payloads are ~215k rows; building
+  // them on the current ~1 GB prod instance exhausts Node's heap and OOM-crashes the
+  // process, which takes every tenant down with it. Gate them OFF by default so the
+  // per-tenant experience stays stable; when gated, the admin paths return [] (admin
+  // overview shows no data) instead of building the payload. Set ADMIN_HEAVY_ENABLED=true
+  // only once the instance has the memory headroom (pairs with the coarse-grain admin
+  // follow-up). Tenant paths are unaffected either way.
+  private readonly ADMIN_HEAVY_ENABLED = process.env.ADMIN_HEAVY_ENABLED === 'true';
 
   // How many per-window warm queries (personas, geo) may hit Snowflake at once.
   // The four windows of each dataset are independent, so warming them in a small
@@ -204,14 +212,16 @@ export class CacheService implements OnModuleInit {
   async onModuleInit() {
     this.logger.log('Populating cache on startup...');
     await this.refreshAll();
-    void this.warmAdmin(); // warm the heavy admin payloads in the background (non-blocking)
+    // Only warm the heavy admin payloads when explicitly enabled (memory headroom);
+    // on the default (gated) path they are never built, so startup can't OOM.
+    if (this.ADMIN_HEAVY_ENABLED) void this.warmAdmin();
 
     // Schedule nightly refresh at midnight PHT (UTC+8) = 16:00 UTC
     cron.schedule('0 16 * * *', async () => {
       this.logger.log('Running scheduled midnight PHT cache refresh...');
       await this.refreshAll();
       this.clearLazyCaches(); // drop per-tenant slices so they reload fresh
-      void this.warmAdmin();  // repopulate the admin slots cleared just above
+      if (this.ADMIN_HEAVY_ENABLED) void this.warmAdmin(); // repopulate the admin slots cleared just above
     });
   }
 
@@ -1376,7 +1386,9 @@ private fetchDiscountsEnriched(company: string | null, brand?: string, category?
         );
   } else {
     data = isAdmin
-      ? await this.loadAdminCached('timeseries', () => this.runExclusive(() => this.fetchAllTimeSeries()), 'timeseries')
+      ? (this.ADMIN_HEAVY_ENABLED
+          ? await this.loadAdminCached('timeseries', () => this.runExclusive(() => this.fetchAllTimeSeries()), 'timeseries')
+          : []) // gated: see ADMIN_HEAVY_ENABLED — avoids the OOM-sized admin payload
       : await this.loadWithCache(
           this.timeseriesByCompany, this.timeseriesInflight,
           companyName, c => this.fetchTenantTimeSeries(c), 'timeseries',
@@ -1522,7 +1534,9 @@ async getDiscounts(companyName: string, isAdmin: boolean, dateFrom?: string, dat
         );
   } else {
     data = isAdmin
-      ? await this.loadAdminCached('discounts', () => this.runExclusive(() => this.fetchAllDiscounts()), 'discounts')
+      ? (this.ADMIN_HEAVY_ENABLED
+          ? await this.loadAdminCached('discounts', () => this.runExclusive(() => this.fetchAllDiscounts()), 'discounts')
+          : []) // gated: see ADMIN_HEAVY_ENABLED — avoids the OOM-sized admin payload
       : await this.loadWithCache(
           this.discountsByCompany, this.discountsInflight,
           companyName, c => this.fetchTenantDiscounts(c), 'discounts',
